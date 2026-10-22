@@ -8,6 +8,7 @@ set(
   src/clip-writer.cpp
   src/cue-dock.cpp
   src/ffmpeg-compat.cpp
+  src/highlights-tab.cpp
   src/packet-buffer.cpp
   src/plugin-main.cpp
   src/rc-common.cpp
@@ -16,6 +17,7 @@ set(
   src/replay-event.cpp
   src/replay-player.cpp
   src/settings-dialog.cpp
+  src/sport.cpp
   src/websocket-api.cpp
 )
 
@@ -26,6 +28,7 @@ set(
   src/clip-writer.hpp
   src/cue-dock.hpp
   src/ffmpeg-compat.hpp
+  src/highlights-tab.hpp
   src/packet-buffer.hpp
   src/plugin-support.h
   src/rc-common.hpp
@@ -34,6 +37,7 @@ set(
   src/replay-event.hpp
   src/replay-player.hpp
   src/settings-dialog.hpp
+  src/sport.hpp
   src/third-party/obs-websocket-api.h
   src/websocket-api.hpp
 )

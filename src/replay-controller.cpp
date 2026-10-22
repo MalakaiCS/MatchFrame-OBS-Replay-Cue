@@ -177,6 +177,18 @@ const HotkeyDef kHotkeys[] = {
 	 [](ReplayController &c) {
 		 c.playNextEvent();
 	 }},
+	{"ReplayCue.NextMatchPhase", "Hotkey.NextMatchPhase",
+	 [](ReplayController &c) {
+		 c.nextMatchPhase();
+	 }},
+	{"ReplayCue.PlayHighlights", "Hotkey.PlayHighlights",
+	 [](ReplayController &c) {
+		 c.playHighlights();
+	 }},
+	{"ReplayCue.ToggleHighlight", "Hotkey.ToggleHighlight",
+	 [](ReplayController &c) {
+		 c.toggleHighlight(QString::fromStdString(c.selectedEventId()));
+	 }},
 };
 
 void hotkeyPressed(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -247,6 +259,8 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent)
 
 	statusData = obs_data_create();
 	eventsData = obs_data_create();
+	matchData = obs_data_create();
+	rebuildMatchSnapshot();
 
 	writer = std::make_unique<ClipWriter>([this](ClipResult result) {
 		QMetaObject::invokeMethod(
@@ -367,6 +381,7 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 				ref.player->pause();
 			playingId.clear();
 			queue.clear();
+			highlightSession = false;
 			emit playbackUpdated();
 		}
 		break;
@@ -384,6 +399,7 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 		}
 		playingId.clear();
 		queue.clear();
+		highlightSession = false;
 		playerWeak = nullptr;
 		previousScene = nullptr;
 		pendingLiveScene = nullptr;
@@ -488,8 +504,15 @@ void ReplayController::applyConfig(const Config &updated)
 	const bool captureChanged = !sameCapture(cfg, updated);
 	const bool folderChanged = cfg.folder != updated.folder || cfg.angleLabels() != updated.angleLabels() ||
 				   cfg.watchFolder != updated.watchFolder;
+	const bool sportChanged = cfg.sport != updated.sport;
 
+	/* the match moves on while the settings dialog is open; a new sport
+	 * starts a new match */
+	const int phase = cfg.matchPhase;
+	const std::string match = cfg.matchId;
 	cfg = updated;
+	cfg.matchPhase = sportChanged ? 0 : phase;
+	cfg.matchId = sportChanged ? std::string() : match;
 	cfg.save();
 
 	if (captureChanged && engine.armed())
@@ -499,7 +522,10 @@ void ReplayController::applyConfig(const Config &updated)
 		refreshEvents();
 	}
 	updateWatcher();
+	rebuildMatchSnapshot();
 	emit statusChanged();
+	if (sportChanged)
+		emit matchChanged();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -603,6 +629,9 @@ void ReplayController::createEvent(int64_t inUsec, int64_t outUsec, bool play)
 	ClipJob job;
 	job.number = nextNumber++;
 	job.name = std::string(text("Event.DefaultName")) + " " + std::to_string(job.number);
+	job.highlight = cfg.highlightNewReplays;
+	job.period = sport().periods ? periodOfPhase(cfg.matchPhase) : 0;
+	job.match = cfg.matchId;
 	job.folder = cfg.folder;
 	job.created = wallClockSeconds() - (nowUsec() - outUsec) / 1000000;
 	char suffix[16];
@@ -847,6 +876,179 @@ void ReplayController::toggleFavorite(const QString &id)
 	emit eventsChanged();
 }
 
+/* ------------------------------------------------------------------------- */
+/* Match and highlights                                                      */
+
+bool ReplayController::inReel(const ReplayEvent &event, int reel) const
+{
+	const Sport &s = sport();
+	if (s.periods == 0)
+		return true;
+	return event.match == cfg.matchId && reelIncludes(s, reel, event.period);
+}
+
+QStringList ReplayController::reelIds(int reel) const
+{
+	QStringList ids;
+	for (const ReplayEvent &e : eventList)
+		if (e.highlight && inReel(e, reel))
+			ids << qstr(e.id);
+	return ids;
+}
+
+void ReplayController::matchUpdated()
+{
+	const Sport &s = sport();
+	cfg.save();
+	rebuildMatchSnapshot();
+	emit matchChanged();
+
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_int(data, "phase", cfg.matchPhase);
+	obs_data_set_string(data, "name", phaseName(s, cfg.matchPhase).c_str());
+	obs_data_set_int(data, "period", periodOfPhase(cfg.matchPhase));
+	obs_data_set_bool(data, "break", isBreakPhase(s, cfg.matchPhase));
+	obs_data_set_int(data, "reel", currentReel());
+	obs_data_set_string(data, "match_id", cfg.matchId.c_str());
+	emitVendor("MatchPhaseChanged", data);
+}
+
+void ReplayController::setMatchPhase(int phase)
+{
+	const Sport &s = sport();
+	phase = std::clamp(phase, 0, phaseCount(s) - 1);
+	if (phase == cfg.matchPhase)
+		return;
+	cfg.matchPhase = phase;
+	if (phase > 0 && cfg.matchId.empty())
+		cfg.matchId = formatFileStamp(wallClockSeconds());
+
+	const QString name = qstr(phaseName(s, phase));
+	if (isBreakPhase(s, phase))
+		say(QString(text("Msg.BreakStarted")).arg(name));
+	else if (phase > 0)
+		say(QString(text("Msg.PeriodStarted")).arg(name));
+	matchUpdated();
+}
+
+void ReplayController::nextMatchPhase()
+{
+	const Sport &s = sport();
+	if (s.periods == 0) {
+		say(text("Msg.NoSport"), true);
+		return;
+	}
+	if (isFullTime(s, cfg.matchPhase)) {
+		say(text("Msg.MatchOver"), true);
+		return;
+	}
+	setMatchPhase(cfg.matchPhase + 1);
+}
+
+void ReplayController::newMatch()
+{
+	cfg.matchPhase = 0;
+	cfg.matchId.clear();
+	say(text("Msg.NewMatch"));
+	matchUpdated();
+}
+
+void ReplayController::playHighlights(int reel)
+{
+	const std::vector<int> reels = reelsOf(sport());
+	if (std::find(reels.begin(), reels.end(), reel) == reels.end())
+		reel = currentReel();
+
+	const QStringList ids = reelIds(reel);
+	const QString name = qstr(reelName(sport(), reel));
+	if (ids.isEmpty()) {
+		say(QString(text("Msg.NoHighlights")).arg(name), true);
+		return;
+	}
+
+	highlightSession = true;
+	highlightReel = reel;
+	playReelFrom(ids, 0);
+
+	double duration = 0;
+	for (const QString &id : ids)
+		if (const ReplayEvent *e = findEvent(id.toStdString()))
+			duration += e->duration;
+	say(QString(text("Msg.HighlightsStarted")).arg(name).arg(ids.size()));
+
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_int(data, "reel", reel);
+	obs_data_set_string(data, "name", name.toUtf8().constData());
+	obs_data_set_int(data, "count", ids.size());
+	obs_data_set_double(data, "duration", duration);
+	obs_data_set_bool(data, "loop", cfg.loopHighlights);
+	emitVendor("HighlightsStarted", data);
+}
+
+void ReplayController::playReelFrom(const QStringList &ids, int index)
+{
+	if (index < 0 || index >= ids.size())
+		return;
+	const ReplayEvent *event = findEvent(ids[index].toStdString());
+	if (!event)
+		return;
+	queue = ids.mid(index + 1);
+	startEvent(*event, angleIndex, true, true);
+}
+
+void ReplayController::setHighlightsLoop(bool enabled)
+{
+	cfg.loopHighlights = enabled;
+	cfg.save();
+	rebuildMatchSnapshot();
+	emit statusChanged();
+}
+
+void ReplayController::adoptIntoMatch(ReplayEvent &event)
+{
+	/* an imported clip, or one saved before kick-off, joins the current match */
+	if (event.match.empty())
+		event.match = cfg.matchId;
+	if (event.period == 0 && sport().periods)
+		event.period = periodOfPhase(cfg.matchPhase);
+}
+
+void ReplayController::setHighlight(const QString &id, bool on)
+{
+	ReplayEvent *event = findEventMutable(id.toStdString());
+	if (!event || event->highlight == on)
+		return;
+	event->highlight = on;
+	if (on)
+		adoptIntoMatch(*event);
+	persist(*event);
+	rebuildEventsSnapshot();
+	emit eventsChanged();
+}
+
+void ReplayController::toggleHighlight(const QString &id)
+{
+	const ReplayEvent *event = findEvent(id.toStdString());
+	if (!event) {
+		say(text("Msg.NoReplay"), true);
+		return;
+	}
+	setHighlight(id, !event->highlight);
+}
+
+void ReplayController::setEventPeriod(const QString &id, int period)
+{
+	ReplayEvent *event = findEventMutable(id.toStdString());
+	if (!event)
+		return;
+	event->period = std::clamp(period, 0, sport().periods);
+	if (event->period > 0)
+		adoptIntoMatch(*event);
+	persist(*event);
+	rebuildEventsSnapshot();
+	emit eventsChanged();
+}
+
 void ReplayController::deleteEvents(const QStringList &ids)
 {
 	int removed = 0;
@@ -953,21 +1155,22 @@ void ReplayController::importReplayBufferSave()
 /* ------------------------------------------------------------------------- */
 /* Player and scenes                                                         */
 
-bool ReplayController::ensureReplayScene(OBSSourceAutoRelease &scene, obs_source_t *player, bool create)
+bool ReplayController::ensureScene(const std::string &name, OBSSourceAutoRelease &scene, obs_source_t *player,
+				   bool create)
 {
-	scene = obs_get_source_by_name(cfg.sceneName.c_str());
+	scene = obs_get_source_by_name(name.c_str());
 	if (scene && !obs_scene_from_source(scene)) {
-		say(QString(text("Msg.NameConflict")).arg(qstr(cfg.sceneName)), true);
+		say(QString(text("Msg.NameConflict")).arg(qstr(name)), true);
 		scene = nullptr;
 		return false;
 	}
 	if (!scene) {
 		if (!create)
 			return false;
-		obs_scene_t *created = obs_scene_create(cfg.sceneName.c_str());
+		obs_scene_t *created = obs_scene_create(name.c_str());
 		scene = obs_source_get_ref(obs_scene_get_source(created));
 		obs_scene_release(created);
-		say(QString(text("Msg.SceneCreated")).arg(qstr(cfg.sceneName)));
+		say(QString(text("Msg.SceneCreated")).arg(qstr(name)));
 	}
 
 	if (player && create) {
@@ -1048,15 +1251,28 @@ ReplayController::PlayerRef ReplayController::acquirePlayer(bool create)
 	ref.player = playerFromSource(ref.source);
 	if (create) {
 		OBSSourceAutoRelease scene;
-		ensureReplayScene(scene, ref.source, true);
+		ensureScene(cfg.sceneName, scene, ref.source, true);
 	}
 	return ref;
+}
+
+std::string ReplayController::sessionSceneName() const
+{
+	return highlightSession && !cfg.highlightsScene.empty() ? cfg.highlightsScene : cfg.sceneName;
+}
+
+bool ReplayController::isReplayScene(obs_source_t *scene) const
+{
+	if (!scene)
+		return false;
+	const char *name = obs_source_get_name(scene);
+	return cfg.sceneName == name || (!cfg.highlightsScene.empty() && cfg.highlightsScene == name);
 }
 
 bool ReplayController::replaySceneIsLive()
 {
 	OBSSourceAutoRelease current = obs_frontend_get_current_scene();
-	return current && cfg.sceneName == obs_source_get_name(current);
+	return current && sessionSceneName() == obs_source_get_name(current);
 }
 
 PlayRequest ReplayController::buildRequest(const ReplayEvent &event, int angle, bool autoplay) const
@@ -1068,7 +1284,7 @@ PlayRequest ReplayController::buildRequest(const ReplayEvent &event, int angle, 
 		request.angles.push_back({event.angles[i].label, event.angles[i].file, event.inOffset(i)});
 	request.duration = event.inUsec ? event.duration : 0.0;
 	request.angle = std::clamp(angle, 0, std::max(0, (int)event.angles.size() - 1));
-	request.speed = speedValue;
+	request.speed = highlightSession ? cfg.highlightsSpeed : speedValue;
 	request.autoplay = autoplay;
 	request.audio = cfg.playAudio;
 	request.hwDecode = cfg.hwDecode;
@@ -1084,9 +1300,16 @@ void ReplayController::startEvent(const ReplayEvent &event, int angle, bool auto
 	PlayerRef ref = acquirePlayer(true);
 	if (!ref.player)
 		return;
+	const std::string sceneName = sessionSceneName();
+	if (sceneName != cfg.sceneName) {
+		OBSSourceAutoRelease highlightsScene;
+		ensureScene(sceneName, highlightsScene, ref.source, true);
+	}
 
 	PlayRequest request = buildRequest(event, angle, autoplay);
 	ref.player->load(request);
+	/* a Back to Live still fading out must not stop this replay when it ends */
+	stopAfterTransition = false;
 
 	playingId = event.id;
 	angleIndex = request.angle;
@@ -1099,7 +1322,7 @@ void ReplayController::startEvent(const ReplayEvent &event, int angle, bool auto
 		emit selectionChanged(qstr(selectedId));
 	}
 
-	OBSSourceAutoRelease scene = obs_get_source_by_name(cfg.sceneName.c_str());
+	OBSSourceAutoRelease scene = obs_get_source_by_name(sceneName.c_str());
 	if (goLive && scene && !replaySceneIsLive()) {
 		/* switch once the first frame is up so the transition never
 		 * reveals a stale or empty player */
@@ -1113,6 +1336,7 @@ void ReplayController::startEvent(const ReplayEvent &event, int angle, bool auto
 	OBSDataAutoRelease data = eventToData(event);
 	obs_data_set_int(data, "angle", request.angle + 1);
 	obs_data_set_bool(data, "cued", cued);
+	obs_data_set_bool(data, "highlights", highlightSession);
 	emitVendor("PlaybackStarted", data);
 }
 
@@ -1121,7 +1345,10 @@ void ReplayController::goLiveNow(obs_source_t *scene)
 	OBSSourceAutoRelease current = obs_frontend_get_current_scene();
 	if (current.Get() == scene)
 		return;
-	previousScene = obs_source_get_weak_source(current);
+	/* going from the replay scene to the highlights scene (or back) keeps
+	 * the live scene to return to */
+	if (!isReplayScene(current))
+		previousScene = obs_source_get_weak_source(current);
 	switchProgram(scene, cfg.replayTransition);
 }
 
@@ -1169,6 +1396,7 @@ void ReplayController::cueEvent(const QString &id)
 	if (!event)
 		return;
 	queue.clear();
+	highlightSession = false;
 	startEvent(*event, angleIndex, false, false);
 }
 
@@ -1188,6 +1416,7 @@ void ReplayController::playEvent(const QString &id, int angle)
 		return;
 	}
 	queue.clear();
+	highlightSession = false;
 	startEvent(*event, angle >= 0 ? angle : angleIndex, true, true);
 }
 
@@ -1214,6 +1443,14 @@ void ReplayController::playLatest()
 
 void ReplayController::playNextEvent()
 {
+	if (highlightsPlaying()) {
+		/* step through the reel rather than the replay list */
+		const QStringList ids = reelIds(highlightReel);
+		const int idx = (int)ids.indexOf(qstr(playingId));
+		if (idx + 1 < ids.size())
+			playReelFrom(ids, idx + 1);
+		return;
+	}
 	int idx = indexOfEvent(playingId.empty() ? selectedId : playingId);
 	if (idx + 1 < (int)eventList.size())
 		playEvent(qstr(eventList[(size_t)idx + 1].id));
@@ -1221,6 +1458,12 @@ void ReplayController::playNextEvent()
 
 void ReplayController::playPreviousEvent()
 {
+	if (highlightsPlaying()) {
+		const QStringList ids = reelIds(highlightReel);
+		const int idx = (int)ids.indexOf(qstr(playingId));
+		playReelFrom(ids, std::max(0, idx - 1));
+		return;
+	}
 	int idx = indexOfEvent(playingId.empty() ? selectedId : playingId);
 	if (idx > 0)
 		playEvent(qstr(eventList[(size_t)idx - 1].id));
@@ -1236,6 +1479,7 @@ void ReplayController::playQueue(const QStringList &ids)
 	if (!first)
 		return;
 	queue = ids.mid(1);
+	highlightSession = false;
 	startEvent(*first, angleIndex, true, true);
 }
 
@@ -1264,7 +1508,7 @@ void ReplayController::resume()
 		return;
 	ref.player->play();
 	cued = false;
-	OBSSourceAutoRelease scene = obs_get_source_by_name(cfg.sceneName.c_str());
+	OBSSourceAutoRelease scene = obs_get_source_by_name(sessionSceneName().c_str());
 	if (scene && !replaySceneIsLive()) {
 		pendingLiveScene = obs_source_get_weak_source(scene);
 		pendingLiveDeadline = nowUsec() + 400000;
@@ -1285,7 +1529,7 @@ void ReplayController::returnToLive()
 	pendingLiveScene = nullptr;
 
 	PlayerRef ref = acquirePlayer(false);
-	OBSSourceAutoRelease scene = obs_get_source_by_name(cfg.sceneName.c_str());
+	OBSSourceAutoRelease scene = obs_get_source_by_name(sessionSceneName().c_str());
 
 	if (scene && replaySceneIsLive()) {
 		OBSSourceAutoRelease target = !cfg.liveScene.empty() ? obs_get_source_by_name(cfg.liveScene.c_str())
@@ -1313,6 +1557,7 @@ void ReplayController::returnToLive()
 	}
 
 	playingId.clear();
+	highlightSession = false;
 	emit playbackUpdated();
 	OBSDataAutoRelease data = obs_data_create();
 	emitVendor("PlaybackStopped", data);
@@ -1418,7 +1663,14 @@ void ReplayController::onPlaybackEnded()
 		}
 	}
 
-	if (cfg.autoPlayNext) {
+	if (highlightSession) {
+		/* loop the reel through the break; it picks up replays added since */
+		const QStringList ids = reelIds(highlightReel);
+		if (cfg.loopHighlights && !ids.isEmpty()) {
+			playReelFrom(ids, 0);
+			return;
+		}
+	} else if (cfg.autoPlayNext) {
 		int idx = indexOfEvent(playingId);
 		if (idx >= 0 && idx + 1 < (int)eventList.size()) {
 			startEvent(eventList[(size_t)idx + 1], angleIndex, true, true);
@@ -1499,13 +1751,23 @@ void ReplayController::poll()
 	obs_data_set_double(playback, "position", status.position);
 	obs_data_set_double(playback, "duration", status.duration);
 	obs_data_set_bool(playback, "cued", cued);
+	obs_data_set_bool(playback, "highlights", highlightsPlaying());
 	obs_data_set_obj(snap, "playback", playback);
 
 	OBSDataAutoRelease options = obs_data_create();
 	obs_data_set_bool(options, "auto_play_next", cfg.autoPlayNext);
 	obs_data_set_bool(options, "cycle_angles", cfg.cycleAngles);
 	obs_data_set_bool(options, "return_to_live", cfg.returnToLive);
+	obs_data_set_bool(options, "loop_highlights", cfg.loopHighlights);
 	obs_data_set_obj(snap, "options", options);
+
+	const Sport &s = sport();
+	OBSDataAutoRelease match = obs_data_create();
+	obs_data_set_string(match, "sport", s.id);
+	obs_data_set_int(match, "phase", cfg.matchPhase);
+	obs_data_set_string(match, "phase_name", phaseName(s, cfg.matchPhase).c_str());
+	obs_data_set_bool(match, "in_break", isBreakPhase(s, cfg.matchPhase));
+	obs_data_set_obj(snap, "match", match);
 
 	std::lock_guard<std::mutex> lock(snapshotMutex);
 	statusData = snap.Get();
@@ -1524,9 +1786,63 @@ void ReplayController::rebuildEventsSnapshot()
 	obs_data_set_array(snap, "events", list);
 	obs_data_set_string(snap, "selected_event", selectedId.c_str());
 
+	{
+		std::lock_guard<std::mutex> lock(snapshotMutex);
+		eventsData = snap.Get();
+		obs_data_addref(eventsData);
+	}
+	rebuildMatchSnapshot(); /* reel contents follow the events */
+}
+
+void ReplayController::rebuildMatchSnapshot()
+{
+	const Sport &s = sport();
+	OBSDataAutoRelease snap = obs_data_create();
+	obs_data_set_string(snap, "sport", s.id);
+	obs_data_set_string(snap, "sport_name", text(s.nameKey));
+	obs_data_set_string(snap, "match_id", cfg.matchId.c_str());
+	obs_data_set_int(snap, "phase", cfg.matchPhase);
+	obs_data_set_string(snap, "phase_name", phaseName(s, cfg.matchPhase).c_str());
+	obs_data_set_int(snap, "period", periodOfPhase(cfg.matchPhase));
+	obs_data_set_bool(snap, "in_break", isBreakPhase(s, cfg.matchPhase));
+	obs_data_set_int(snap, "current_reel", currentReel());
+	obs_data_set_bool(snap, "loop_highlights", cfg.loopHighlights);
+
+	OBSDataArrayAutoRelease phases = obs_data_array_create();
+	for (int phase = 0; s.periods && phase < phaseCount(s); phase++) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_int(item, "phase", phase);
+		obs_data_set_string(item, "name", phaseName(s, phase).c_str());
+		obs_data_set_bool(item, "break", isBreakPhase(s, phase));
+		obs_data_array_push_back(phases, item);
+	}
+	obs_data_set_array(snap, "phases", phases);
+
+	OBSDataArrayAutoRelease reels = obs_data_array_create();
+	for (int reel : reelsOf(s)) {
+		const QStringList ids = reelIds(reel);
+		double duration = 0;
+		OBSDataArrayAutoRelease events = obs_data_array_create();
+		for (const QString &id : ids) {
+			const ReplayEvent *e = findEvent(id.toStdString());
+			duration += e ? e->duration : 0;
+			OBSDataAutoRelease item = obs_data_create();
+			obs_data_set_string(item, "id", id.toUtf8().constData());
+			obs_data_array_push_back(events, item);
+		}
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_int(item, "reel", reel);
+		obs_data_set_string(item, "name", reelName(s, reel).c_str());
+		obs_data_set_int(item, "count", ids.size());
+		obs_data_set_double(item, "duration", duration);
+		obs_data_set_array(item, "events", events);
+		obs_data_array_push_back(reels, item);
+	}
+	obs_data_set_array(snap, "reels", reels);
+
 	std::lock_guard<std::mutex> lock(snapshotMutex);
-	eventsData = snap.Get();
-	obs_data_addref(eventsData);
+	matchData = snap.Get();
+	obs_data_addref(matchData);
 }
 
 obs_data_t *ReplayController::statusSnapshot()
@@ -1541,6 +1857,13 @@ obs_data_t *ReplayController::eventsSnapshot()
 	std::lock_guard<std::mutex> lock(snapshotMutex);
 	obs_data_addref(eventsData);
 	return eventsData;
+}
+
+obs_data_t *ReplayController::matchSnapshot()
+{
+	std::lock_guard<std::mutex> lock(snapshotMutex);
+	obs_data_addref(matchData);
+	return matchData;
 }
 
 void ReplayController::emitVendor(const char *name, obs_data_t *data)

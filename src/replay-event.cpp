@@ -201,6 +201,9 @@ obs_data_t *eventToData(const ReplayEvent &event)
 	obs_data_set_double(data, "duration", event.duration);
 	obs_data_set_bool(data, "imported", event.imported);
 	obs_data_set_bool(data, "favorite", event.favorite);
+	obs_data_set_bool(data, "highlight", event.highlight);
+	obs_data_set_int(data, "period", event.period);
+	obs_data_set_string(data, "match", event.match.c_str());
 
 	obs_data_array_t *angles = obs_data_array_create();
 	for (const AngleClip &clip : event.angles) {
@@ -274,6 +277,9 @@ bool loadSidecar(const std::string &path, ReplayEvent &event)
 	event.duration = obs_data_get_double(data, "duration");
 	event.imported = obs_data_get_bool(data, "imported");
 	event.favorite = obs_data_get_bool(data, "favorite");
+	event.highlight = obs_data_get_bool(data, "highlight");
+	event.period = (int)obs_data_get_int(data, "period");
+	event.match = obs_data_get_string(data, "match");
 	if (event.id.empty())
 		event.id = "rc:" + stemOf(path);
 

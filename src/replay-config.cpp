@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "replay-config.hpp"
 #include "rc-common.hpp"
+#include "sport.hpp"
 
 #include <QDir>
 #include <QStandardPaths>
@@ -69,12 +70,21 @@ void Config::load()
 	*this = Config();
 	folder = defaultFolder();
 	exportFolder = QDir(QString::fromStdString(folder)).filePath("Exports").toStdString();
-	tags = {"Goal", "Foul", "Save", "Highlight"};
+	tags.assign(findSport(sport).tags.begin(), findSport(sport).tags.end());
 
 	std::string path = configPath();
 	obs_data_t *data = path.empty() ? nullptr : obs_data_create_from_json_file_safe(path.c_str(), "bak");
 	if (!data)
 		return;
+
+	sport = findSport(getString(data, "sport", sport)).id;
+	tags.assign(findSport(sport).tags.begin(), findSport(sport).tags.end());
+	matchPhase = std::clamp(getInt(data, "match_phase", matchPhase), 0, phaseCount(findSport(sport)) - 1);
+	matchId = findSport(sport).periods ? getString(data, "match_id", matchId) : std::string();
+	highlightNewReplays = getBool(data, "highlight_new_replays", highlightNewReplays);
+	highlightsScene = getString(data, "highlights_scene", highlightsScene);
+	highlightsSpeed = std::clamp(getDouble(data, "highlights_speed", highlightsSpeed), 0.05, 2.0);
+	loopHighlights = getBool(data, "loop_highlights", loopHighlights);
 
 	obs_data_array_t *arr = obs_data_get_array(data, "angles");
 	for (size_t i = 0, n = obs_data_array_count(arr); i < n && angles.size() < (size_t)kMaxAngles; i++) {
@@ -207,6 +217,14 @@ void Config::save() const
 	obs_data_set_bool(data, "play_audio", playAudio);
 	obs_data_set_bool(data, "hw_decode", hwDecode);
 	obs_data_set_bool(data, "start_cued_on_live", startCuedOnLive);
+
+	obs_data_set_string(data, "sport", sport.c_str());
+	obs_data_set_int(data, "match_phase", matchPhase);
+	obs_data_set_string(data, "match_id", matchId.c_str());
+	obs_data_set_bool(data, "highlight_new_replays", highlightNewReplays);
+	obs_data_set_string(data, "highlights_scene", highlightsScene.c_str());
+	obs_data_set_double(data, "highlights_speed", highlightsSpeed);
+	obs_data_set_bool(data, "loop_highlights", loopHighlights);
 
 	obs_data_save_json_pretty_safe(data, path.c_str(), "tmp", "bak");
 	obs_data_release(data);

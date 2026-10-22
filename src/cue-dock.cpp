@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "cue-dock.hpp"
+#include "highlights-tab.hpp"
 #include "rc-common.hpp"
 #include "replay-controller.hpp"
 #include "settings-dialog.hpp"
@@ -62,7 +63,7 @@ QString qs(const std::string &s)
 	return QString::fromStdString(s);
 }
 
-enum Column { ColNumber, ColName, ColTag, ColTime, ColLength, ColAngles, ColCount };
+enum Column { ColNumber, ColName, ColTag, ColPeriod, ColTime, ColLength, ColAngles, ColCount };
 constexpr int kIdRole = Qt::UserRole + 1;
 const double kSpeeds[] = {0.25, 0.5, 0.75, 1.0};
 
@@ -138,10 +139,14 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 	markLabel = new QLabel();
 	root->addWidget(markLabel);
 
+	/* match */
+	matchBar = new MatchBar(controller);
+	root->addWidget(matchBar);
+
 	/* events */
 	table = new QTableWidget(0, ColCount);
-	table->setHorizontalHeaderLabels({T("Column.Number"), T("Column.Name"), T("Column.Tag"), T("Column.Time"),
-					  T("Column.Length"), T("Column.Angles")});
+	table->setHorizontalHeaderLabels({T("Column.Number"), T("Column.Name"), T("Column.Tag"), T("Column.Period"),
+					  T("Column.Time"), T("Column.Length"), T("Column.Angles")});
 	table->verticalHeader()->hide();
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -152,7 +157,13 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 	table->setMinimumHeight(120);
 	table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 	table->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
-	root->addWidget(table, 1);
+
+	highlightsTab = new HighlightsTab(controller);
+	tabs = new QTabWidget();
+	tabs->setDocumentMode(true);
+	tabs->addTab(table, T("Dock.TabReplays"));
+	tabs->addTab(highlightsTab, T("Dock.TabHighlights"));
+	root->addWidget(tabs, 1);
 
 	nowPlayingLabel = new QLabel();
 	nowPlayingLabel->setTextFormat(Qt::RichText);
@@ -296,6 +307,7 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 	connect(controller, &ReplayController::selectionChanged, this, &CueDock::syncSelection);
 	connect(controller, &ReplayController::statusChanged, this, &CueDock::updateCapture);
 	connect(controller, &ReplayController::playbackUpdated, this, &CueDock::updatePlayback);
+	connect(controller, &ReplayController::matchChanged, this, &CueDock::onMatchChanged);
 	connect(controller, &ReplayController::message, this, &CueDock::showMessage);
 
 	/* keyboard control while the dock has focus (global keys: OBS hotkeys) */
@@ -315,6 +327,7 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 	shortcut(QKeySequence(Qt::Key_Right), [this]() { controller->step(1); });
 	shortcut(QKeySequence(Qt::Key_I), [this]() { controller->markIn(); });
 	shortcut(QKeySequence(Qt::Key_O), [this]() { controller->markOut(); });
+	shortcut(QKeySequence(Qt::Key_H), [this]() { toggleHighlightSelected(); });
 	for (int i = 0; i < kMaxAngles; i++)
 		shortcut(QKeySequence(Qt::Key_1 + i), [this, i]() { controller->setAngle(i); });
 
@@ -349,7 +362,9 @@ void CueDock::rebuildEvents()
 	updatingTable = true;
 	const auto &events = controller->events();
 	const std::string playing = controller->playingEventId();
+	const Sport &sport = controller->sport();
 	table->setRowCount((int)events.size());
+	table->setColumnHidden(ColPeriod, sport.periods == 0);
 
 	for (int row = 0; row < (int)events.size(); row++) {
 		const ReplayEvent &e = events[(size_t)row];
@@ -364,6 +379,7 @@ void CueDock::rebuildEvents()
 			e.number ? QString::number(e.number) : QString::fromUtf8("–"),
 			(e.favorite ? QString::fromUtf8("★ ") : QString()) + qs(e.name),
 			qs(e.tag),
+			qs(periodName(sport, e.period)),
 			qs(formatClock(e.created)),
 			qs(formatDuration(e.duration)),
 			QString::number(e.angles.size()),
@@ -600,6 +616,21 @@ void CueDock::onTableContextMenu(const QPoint &pos)
 		for (const QString &id : ids)
 			controller->toggleFavorite(id);
 	});
+	add(&menu, event->highlight ? T("Menu.RemoveHighlight") : T("Menu.AddHighlight"),
+	    [this]() { toggleHighlightSelected(); });
+	const Sport &sport = controller->sport();
+	if (sport.periods > 0) {
+		QMenu *periods = menu.addMenu(T("Menu.Period"));
+		for (int period = 0; period <= sport.periods; period++) {
+			const QString name = period ? qs(periodName(sport, period)) : T("Menu.PeriodNone");
+			QAction *action = add(periods, name, [this, ids, period]() {
+				for (const QString &id : ids)
+					controller->setEventPeriod(id, period);
+			});
+			action->setCheckable(true);
+			action->setChecked(event->period == period);
+		}
+	}
 	menu.addSeparator();
 
 	QMenu *exportMenu = menu.addMenu(T("Menu.Export"));
@@ -651,6 +682,25 @@ void CueDock::exportSelected(int angle, bool trim)
 		controller->exportEvent(id, angle, trim);
 }
 
+void CueDock::toggleHighlightSelected()
+{
+	const QStringList ids = selectedIds();
+	const ReplayEvent *first = ids.isEmpty() ? nullptr : controller->findEvent(ids.front().toStdString());
+	if (!first)
+		return;
+	const bool on = !first->highlight;
+	for (const QString &id : ids)
+		controller->setHighlight(id, on);
+}
+
+void CueDock::onMatchChanged()
+{
+	rebuildEvents();
+	/* a break has started: the reel for it is what the operator needs next */
+	if (isBreakPhase(controller->sport(), controller->matchPhase()))
+		tabs->setCurrentWidget(highlightsTab);
+}
+
 void CueDock::openSettings()
 {
 	SettingsDialog dialog(controller->config(), this);
@@ -672,6 +722,10 @@ void saveUiSnapshots(ReplayController *controller, const QString &folder)
 
 	CueDock dock(controller);
 	snap(&dock, QSize(460, 720), QDir(folder).filePath("dock.png"));
+	if (auto *tabs = dock.findChild<QTabWidget *>()) {
+		tabs->setCurrentIndex(1);
+		snap(&dock, QSize(460, 720), QDir(folder).filePath("dock-highlights.png"));
+	}
 
 	SettingsDialog dialog(controller->config());
 	if (auto *tabs = dialog.findChild<QTabWidget *>()) {

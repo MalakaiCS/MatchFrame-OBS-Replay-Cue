@@ -68,6 +68,15 @@ struct Config {
 	bool hwDecode = true;
 	bool startCuedOnLive = true;
 
+	/* sport and highlights */
+	std::string sport = "none";
+	int matchPhase = 0;  /* see sport.hpp */
+	std::string matchId; /* stamped on replays so each match has its own reels */
+	bool highlightNewReplays = true;
+	std::string highlightsScene; /* empty: the replay scene */
+	double highlightsSpeed = 1.0;
+	bool loopHighlights = false;
+
 	void load();
 	void save() const;
 

@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "replay-config.hpp"
 #include "replay-event.hpp"
 #include "replay-player.hpp"
+#include "sport.hpp"
 
 #include <obs.hpp>
 #include <obs-frontend-api.h>
@@ -80,9 +81,19 @@ public:
 	/* angle labels to show on the angle buttons right now */
 	std::vector<std::string> activeAngleLabels() const;
 
+	/* match and highlights */
+	const Sport &sport() const { return findSport(cfg.sport); }
+	int matchPhase() const { return cfg.matchPhase; }
+	int currentReel() const { return reelForPhase(sport(), cfg.matchPhase); }
+	bool inReel(const ReplayEvent &event, int reel) const;
+	QStringList reelIds(int reel) const; /* the reel's highlights, oldest first */
+	bool highlightsPlaying() const { return highlightSession && !playingId.empty(); }
+	int playingReel() const { return highlightReel; }
+
 	/* thread-safe copies for obs-websocket (caller releases) */
 	obs_data_t *statusSnapshot();
 	obs_data_t *eventsSnapshot();
+	obs_data_t *matchSnapshot();
 
 public slots:
 	void toggleArm();
@@ -128,11 +139,21 @@ public slots:
 	void exportEvent(const QString &id, int angle, bool trimToMarks);
 	void refreshEvents();
 
+	void setMatchPhase(int phase);
+	void nextMatchPhase();
+	void newMatch();
+	void playHighlights(int reel = -1); /* -1: currentReel() */
+	void setHighlightsLoop(bool enabled);
+	void setHighlight(const QString &id, bool on);
+	void toggleHighlight(const QString &id);
+	void setEventPeriod(const QString &id, int period);
+
 signals:
 	void eventsChanged();
 	void selectionChanged(const QString &id);
 	void statusChanged();
 	void playbackUpdated();
+	void matchChanged();
 	void message(const QString &text, bool error);
 
 private:
@@ -159,17 +180,25 @@ private:
 	};
 	/* the player stays valid for as long as the PlayerRef lives */
 	PlayerRef acquirePlayer(bool create);
-	bool ensureReplayScene(OBSSourceAutoRelease &scene, obs_source_t *player, bool create);
+	bool ensureScene(const std::string &name, OBSSourceAutoRelease &scene, obs_source_t *player, bool create);
 	PlayRequest buildRequest(const ReplayEvent &event, int angle, bool autoplay) const;
 	void startEvent(const ReplayEvent &event, int angle, bool autoplay, bool goLive);
+	void playReelFrom(const QStringList &ids, int index);
+	void matchUpdated();
 	void goLiveNow(obs_source_t *scene);
 	void switchProgram(obs_source_t *scene, const std::string &transitionName);
 	void restoreTransition();
+	/* the scene the current playback goes out on: the replay scene, or the
+	 * highlights scene while a highlights reel plays */
+	std::string sessionSceneName() const;
+	bool isReplayScene(obs_source_t *scene) const;
 	bool replaySceneIsLive();
 	ReplayEvent *findEventMutable(const std::string &id);
 	bool persist(ReplayEvent &event);
+	void adoptIntoMatch(ReplayEvent &event);
 	void emitVendor(const char *name, obs_data_t *data);
 	void rebuildEventsSnapshot();
+	void rebuildMatchSnapshot();
 	void say(const QString &text, bool error = false);
 
 	Config cfg;
@@ -199,6 +228,8 @@ private:
 	bool stopAfterTransition = false;
 	OBSWeakSourceAutoRelease pendingLiveScene;
 	int64_t pendingLiveDeadline = 0;
+	bool highlightSession = false;
+	int highlightReel = 0;
 
 	/* folder scanning */
 	ProbeCache probeCache;
@@ -217,6 +248,7 @@ private:
 	std::mutex snapshotMutex;
 	OBSDataAutoRelease statusData;
 	OBSDataAutoRelease eventsData;
+	OBSDataAutoRelease matchData;
 
 	QString ffmpegProblem;
 	bool initialized = false;

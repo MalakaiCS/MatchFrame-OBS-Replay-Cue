@@ -44,6 +44,7 @@ private:
 	QWidget *buildCaptureTab();
 	QWidget *buildReplaysTab();
 	QWidget *buildPlaybackTab();
+	QWidget *buildSportTab();
 
 	void addAngleRow(const AngleSetting &angle);
 	void addAllCameras();
@@ -85,6 +86,12 @@ private:
 	QCheckBox *playAudio = nullptr;
 	QCheckBox *hwDecode = nullptr;
 	QCheckBox *startCuedOnLive = nullptr;
+
+	QComboBox *sport = nullptr;
+	QCheckBox *highlightNewReplays = nullptr;
+	QLineEdit *highlightsScene = nullptr;
+	QComboBox *highlightsSpeed = nullptr;
+	QCheckBox *loopHighlights = nullptr;
 };
 
 } // namespace rc

@@ -31,7 +31,11 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
   are added too.
 - **Export for social:** one angle or all angles, trimmed IN→OUT or full,
   as web-ready MP4 (no re-encode).
-- **Control surfaces:** 31 OBS hotkeys and 37 obs-websocket requests for
+- **Sports and highlights:** pick your sport (football, rugby, AFL, netball,
+  basketball and more) and every replay is stamped with the half, quarter or
+  period it was saved in. At Half Time and Full Time a **Highlights** tab has the
+  reel ready to roll, and can loop it through the break.
+- **Control surfaces:** 34 OBS hotkeys and 44 obs-websocket requests for
   Stream Deck, Bitfocus Companion, Touch Portal or your own scripts.
 
 ## Requirements
@@ -86,6 +90,48 @@ Restart OBS and open **Docks → Replay Cue**.
    to switch angles, **25/50/75%** for slow motion, **Back to Live** when done
    (or let it return automatically).
 
+## Sports and highlights
+
+![Half Time highlights in the Highlights tab](docs/images/highlights.png)
+
+Highlights packages keep viewers watching through the breaks. Replay Cue
+builds them as you go:
+
+1. **Settings… → Sport.** Pick your sport. It sets the match structure and the
+   quick tags (Goal, Try, Behind, Mark…):
+
+   | Sport | Periods | Breaks with a highlights reel |
+   |---|---|---|
+   | Football (soccer), rugby union, rugby league, Gaelic football / hurling | 2 halves | Half Time, Full Time |
+   | Australian rules (AFL), netball, hockey | 4 quarters | Quarter Time, Half Time, Three-Quarter Time, Full Time |
+   | Basketball, American football | 4 quarters | End of Q1, Half Time, End of Q3, Full Time |
+   | Ice hockey | 3 periods | 1st and 2nd Intermission, Full Time |
+
+2. **Run the match from the dock.** The match bar above the replay list shows
+   where the match is and moves it on: *Start 1st Half* → *Half Time* →
+   *Start 2nd Half* → *Full Time*. Every replay is stamped with the period it
+   was saved in. A replay saved during a break belongs to the period that just
+   ended, so the late replay of a goal on the whistle still makes it in.
+3. **At the break, roll the reel.** Calling a break opens the **Highlights**
+   tab on that break's reel. Half Time covers the first half, Full Time the
+   whole match, and other breaks the period that just finished. Replays are
+   in the reel unless you untick them; tick or untick any time (or press **H**
+   on a replay in the list). **Play highlights** plays them oldest first,
+   from the selected angle, at the highlights speed (100% by default), with
+   *Cycle angles* if it is on. ⏮/⏭ step through the reel. With **Loop** on,
+   the reel repeats until you press **Back to Live**, so it can fill the whole
+   break.
+4. **Give highlights their own look (optional).** Set a *Highlights scene* in
+   Settings → Sport and reels play there instead of on the Replay scene. Add a
+   "HALF TIME HIGHLIGHTS" graphic to it. The scene is created with the player
+   the first time a reel plays.
+
+**New match** (on the match bar, or its … menu) starts the next game with empty
+reels; earlier replays stay in the list. The … menu also jumps to any part of
+the match if you called a break by mistake, and a replay's right-click
+**Period** menu moves it to another period. Without a sport, the Highlights tab
+has a single *All highlights* reel.
+
 ## Operator controls
 
 ### Dock keyboard (while the dock has focus)
@@ -98,6 +144,7 @@ Restart OBS and open **Docks → Replay Cue**.
 | 1–8 | Switch angle |
 | ← / → | Step one frame |
 | I / O | Mark IN / Mark OUT |
+| H | Add to / remove from highlights |
 | F2 | Rename |
 | Delete | Delete selected (moves files to the Trash) |
 
@@ -106,7 +153,8 @@ Restart OBS and open **Docks → Replay Cue**.
 Arm/disarm, Mark IN, Mark OUT, Save instant replay, Save instant replay and
 play, Cue selected, Play selected, Play latest, Play/pause, Restart, Back to
 live, Next/previous angle, Angle 1–8, Speed 25/50/75/100%, Step back/forward,
-Select previous/next replay, Play previous/next replay.
+Select previous/next replay, Play previous/next replay, Next match period /
+break, Play highlights, Add / remove selected replay in highlights.
 
 Bindings are stored in the plugin's own config and survive scene-collection
 changes.
@@ -155,10 +203,22 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | `DeleteEvent` | `id`/`index` | Move a replay's files to the Trash |
 | `ExportEvent` | `id`/`index`?, `angle?`, `trim?` (default true) | Export MP4s to the export folder |
 | `RefreshEvents` | – | Rescan the replay folder |
+| `GetMatch` | – | Sport, current phase, every phase, and each highlights reel (count, length, replay ids) |
+| `NextMatchPhase` | – | Move the match on (start a period, call a break or full time) |
+| `SetMatchPhase` | `phase` (0 = pre-match) | Jump to a phase (numbers from `GetMatch`) |
+| `NewMatch` | – | Start a new match with empty reels |
+| `PlayHighlights` | `reel?`, `loop?` | Play a highlights reel (default: the current break's) |
+| `SetHighlight` | `id`/`index`?, `highlight?` | Put a replay in or out of the highlights (toggles if `highlight` is omitted) |
+| `SetEventPeriod` | `id`/`index`, `period` | Move a replay to another period |
 | `SaveUiSnapshot` | `folder` | Save PNGs of the dock and settings (for docs) |
 
+Reels are named by the phase number of their break (`reel: 2` is Half Time in
+football; `GetMatch` lists them). Replays in `GetEvents` carry `highlight`,
+`period` and `match`.
+
 Vendor events (subscribe to `Vendors`): `ReplayCreated`, `PlaybackStarted`,
-`PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`.
+`PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`, `MatchPhaseChanged`,
+`HighlightsStarted`.
 
 `tools/replaycue_ws.py` is a dependency-free command-line client:
 
@@ -184,7 +244,7 @@ Replays/
   2026-10-22_20-00-40_R002_Cam-1.mp4
   2026-10-22_20-00-40_R002_Cam-2.mp4
   2026-10-22_20-00-40_R002_Cam-3.mp4
-  2026-10-22_20-00-40_R002.rcue.json   ← name, tag, IN/OUT, per-angle capture time
+  2026-10-22_20-00-40_R002.rcue.json   ← name, tag, period, highlight, IN/OUT, per-angle capture time
 ```
 
 The sidecar stores where IN falls in each file, which is what keeps angles
