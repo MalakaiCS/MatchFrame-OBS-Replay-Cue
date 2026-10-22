@@ -1,5 +1,5 @@
 name: Push
-run-name: ${{ github.ref_name }} push run 🚀
+run-name: ${{ inputs.version && format('{0} release run 🚀', inputs.version) || format('{0} push run 🚀', github.ref_name) }}
 on:
   push:
     branches:
@@ -8,6 +8,12 @@ on:
       - 'release/**'
     tags:
       - '*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release from this branch (e.g. 1.0.0). Creates the tag and publishes the release.
+        required: true
+        type: string
 permissions:
   contents: write
 jobs:
@@ -21,13 +27,15 @@ jobs:
   build-project:
     name: Build Project 🧱
     uses: ./.github/workflows/build-project.yaml
+    with:
+      release: ${{ github.event_name == 'workflow_dispatch' }}
     secrets: inherit
     permissions:
       contents: read
 
   create-release:
     name: Create Release 🛫
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     needs: build-project
     defaults:
@@ -36,24 +44,40 @@ jobs:
     steps:
       - name: Check Release Tag ☑️
         id: check
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           : Check Release Tag ☑️
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           shopt -s extglob
 
-          case "${GITHUB_REF_NAME}" in
+          case "${VERSION}" in
             +([0-9]).+([0-9]).+([0-9]) )
               echo 'validTag=true' >> $GITHUB_OUTPUT
               echo 'prerelease=false' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+              echo "version=${VERSION}" >> $GITHUB_OUTPUT
               ;;
             +([0-9]).+([0-9]).+([0-9])-@(beta|rc)*([0-9]) )
               echo 'validTag=true' >> $GITHUB_OUTPUT
               echo 'prerelease=true' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+              echo "version=${VERSION}" >> $GITHUB_OUTPUT
               ;;
-            *) echo 'validTag=false' >> $GITHUB_OUTPUT ;;
+            *)
+              if [[ "${GITHUB_EVENT_NAME}" == 'workflow_dispatch' ]]; then
+                echo "::error::'${VERSION}' is not a release version (X.Y.Z, X.Y.Z-rcN or X.Y.Z-betaN)"
+                exit 1
+              fi
+              echo 'validTag=false' >> $GITHUB_OUTPUT
+              ;;
           esac
+
+          # A manual release creates its tag, so the tag must not exist yet
+          if [[ "${GITHUB_EVENT_NAME}" == 'workflow_dispatch' ]] \
+            && gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" > /dev/null 2>&1; then
+            echo "::error::Tag ${VERSION} already exists"
+            exit 1
+          fi
 
       - uses: actions/checkout@v4
         if: fromJSON(steps.check.outputs.validTag)
@@ -109,12 +133,14 @@ jobs:
 
       - name: Generate Release Notes 🗒️
         if: fromJSON(steps.check.outputs.validTag)
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
         run: |
           : Generate Release Notes 🗒️
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
           # The CHANGELOG.md section for this version, then the checksums
-          awk -v version="${GITHUB_REF_NAME}" '
+          awk -v version="${VERSION}" '
             /^## / { if (found) exit; if (index($0, "[" version "]")) { found = 1; next } }
             found { print }
           ' source/CHANGELOG.md > ${{ github.workspace }}/RELEASE_NOTES.md
@@ -126,9 +152,10 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564
         with:
-          draft: true
+          draft: ${{ github.event_name != 'workflow_dispatch' }}
           prerelease: ${{ fromJSON(steps.check.outputs.prerelease) }}
           tag_name: ${{ steps.check.outputs.version }}
+          target_commitish: ${{ github.sha }}
           name: ${{ needs.build-project.outputs.pluginName }} ${{ steps.check.outputs.version }}
           body_path: ${{ github.workspace }}/RELEASE_NOTES.md
           files: |

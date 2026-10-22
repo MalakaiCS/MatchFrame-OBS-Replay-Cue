@@ -232,8 +232,11 @@ The project follows the official
 Pushing to GitHub runs `.github/workflows/push.yaml`, which builds and packages
 Windows, macOS and Ubuntu artifacts. Tagging a release (`1.0.0`) creates a
 draft GitHub release with the Windows `.zip`, macOS `.pkg` and Ubuntu `.deb`,
-using that version's section of `CHANGELOG.md` as the release notes. `buildspec.json` pins OBS 32.2.2 and the
-matching obs-deps (`2026-07-15`).
+using that version's section of `CHANGELOG.md` as the release notes. To
+release without pushing a tag, run the **Push** workflow from the Actions tab
+on `main` with the version (`1.0.0`): it builds, creates the tag and publishes
+the release. `buildspec.json` pins OBS 32.2.2 and the matching obs-deps
+(`2026-07-15`).
 
 Local builds use the template presets:
 
