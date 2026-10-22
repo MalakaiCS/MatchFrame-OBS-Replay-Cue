@@ -31,9 +31,11 @@ target_compile_options(
   ${CMAKE_PROJECT_NAME}
   PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
 )
+# No moc_predefs.h: generating it runs clang++ inside an Xcode 26 script phase,
+# where conflicting *_DEPLOYMENT_TARGET variables make the compiler refuse to run.
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
-  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON AUTOMOC_COMPILER_PREDEFINES OFF
 )
 
 replay_cue_link_ffmpeg(${CMAKE_PROJECT_NAME})

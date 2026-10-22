@@ -29,6 +29,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0)
 set(CMAKE_AUTOMOC ON)
+# Matches the release build, which cannot generate moc_predefs.h under Xcode 26.
+set(CMAKE_AUTOMOC_COMPILER_PREDEFINES OFF)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
 
