@@ -57,6 +57,9 @@ struct ReplayEvent {
 	double duration = 0; /* playable length in seconds */
 	bool imported = false;
 	bool favorite = false;
+	bool highlight = false; /* in the highlights reels */
+	int period = 0;         /* match period it was saved in, 0 if none */
+	std::string match;      /* match it belongs to (Config::matchId) */
 	std::vector<AngleClip> angles;
 
 	/* Seconds from the start of angle i's file to the IN point. */

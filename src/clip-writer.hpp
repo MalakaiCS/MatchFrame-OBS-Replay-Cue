@@ -39,6 +39,9 @@ struct ClipJob {
 	int number = 0;
 	std::string name;
 	std::string tag;
+	bool highlight = false;
+	int period = 0;
+	std::string match;
 	std::string folder;
 	std::string baseName;
 	int64_t created = 0;

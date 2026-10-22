@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "capture-engine.hpp"
 #include "rc-common.hpp"
 #include "replay-player.hpp"
+#include "sport.hpp"
 
 #include <obs-frontend-api.h>
 
@@ -131,6 +132,24 @@ QComboBox *transitionCombo(const std::string &current, QWidget *parent)
 	return combo;
 }
 
+QComboBox *speedCombo(double current, QWidget *parent)
+{
+	auto *combo = new QComboBox(parent);
+	for (int pct : {25, 50, 75, 100})
+		combo->addItem(QString("%1%").arg(pct), pct / 100.0);
+	int idx = combo->findData(current);
+	combo->setCurrentIndex(idx >= 0 ? idx : 3);
+	return combo;
+}
+
+QString sportTags(const std::string &sportId)
+{
+	QStringList tags;
+	for (const char *tag : findSport(sportId).tags)
+		tags << QString::fromUtf8(tag);
+	return tags.join(", ");
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(const Config &config, QWidget *parent) : QDialog(parent), initial(config)
@@ -143,6 +162,7 @@ SettingsDialog::SettingsDialog(const Config &config, QWidget *parent) : QDialog(
 	tabs->addTab(buildCaptureTab(), T("Settings.TabCapture"));
 	tabs->addTab(buildReplaysTab(), T("Settings.TabReplays"));
 	tabs->addTab(buildPlaybackTab(), T("Settings.TabPlayback"));
+	tabs->addTab(buildSportTab(), T("Settings.TabSport"));
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 	connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -448,11 +468,7 @@ QWidget *SettingsDialog::buildPlaybackTab()
 	selectData(liveScene, qs(initial.liveScene));
 	form->addRow(T("Settings.LiveScene"), liveScene);
 
-	defaultSpeed = new QComboBox(page);
-	for (int pct : {25, 50, 75, 100})
-		defaultSpeed->addItem(QString("%1%").arg(pct), pct / 100.0);
-	int speedIdx = defaultSpeed->findData(initial.defaultSpeed);
-	defaultSpeed->setCurrentIndex(speedIdx >= 0 ? speedIdx : 3);
+	defaultSpeed = speedCombo(initial.defaultSpeed, page);
 	form->addRow(T("Settings.DefaultSpeed"), defaultSpeed);
 
 	autoPlayNext = new QCheckBox(T("Settings.AutoPlayNext"), page);
@@ -473,6 +489,57 @@ QWidget *SettingsDialog::buildPlaybackTab()
 	hwDecode = new QCheckBox(T("Settings.HwDecode"), page);
 	hwDecode->setChecked(initial.hwDecode);
 	form->addRow(hwDecode);
+	return page;
+}
+
+QWidget *SettingsDialog::buildSportTab()
+{
+	auto *page = new QWidget(this);
+	auto *form = new QFormLayout(page);
+	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+	sport = new QComboBox(page);
+	for (const Sport &s : sports())
+		sport->addItem(T(s.nameKey), QString::fromUtf8(s.id));
+	selectData(sport, qs(initial.sport));
+	form->addRow(T("Settings.Sport"), sport);
+
+	auto *sportHelp = new QLabel(T("Settings.SportHelp"), page);
+	sportHelp->setWordWrap(true);
+	form->addRow(sportHelp);
+
+	auto *useTags = new QPushButton(T("Settings.UseSportTags"), page);
+	form->addRow(useTags);
+
+	highlightNewReplays = new QCheckBox(T("Settings.HighlightNewReplays"), page);
+	highlightNewReplays->setChecked(initial.highlightNewReplays);
+	form->addRow(highlightNewReplays);
+
+	highlightsScene = new QLineEdit(qs(initial.highlightsScene), page);
+	highlightsScene->setPlaceholderText(T("Settings.SameAsReplayScene"));
+	highlightsScene->setToolTip(T("Settings.HighlightsSceneTip"));
+	form->addRow(T("Settings.HighlightsScene"), highlightsScene);
+
+	highlightsSpeed = speedCombo(initial.highlightsSpeed, page);
+	form->addRow(T("Settings.HighlightsSpeed"), highlightsSpeed);
+
+	loopHighlights = new QCheckBox(T("Settings.LoopHighlights"), page);
+	loopHighlights->setChecked(initial.loopHighlights);
+	form->addRow(loopHighlights);
+
+	auto *highlightsHelp = new QLabel(T("Settings.HighlightsHelp"), page);
+	highlightsHelp->setWordWrap(true);
+	form->addRow(highlightsHelp);
+
+	connect(useTags, &QPushButton::clicked, this,
+		[this]() { tags->setText(sportTags(sport->currentData().toString().toStdString())); });
+	/* switching sport swaps the quick tags too, unless they were edited */
+	connect(sport, &QComboBox::currentIndexChanged, this, [this, previous = initial.sport]() mutable {
+		const std::string next = sport->currentData().toString().toStdString();
+		if (tags->text().trimmed() == sportTags(previous))
+			tags->setText(sportTags(next));
+		previous = next;
+	});
 	return page;
 }
 
@@ -530,6 +597,12 @@ Config SettingsDialog::result() const
 	cfg.startCuedOnLive = startCuedOnLive->isChecked();
 	cfg.playAudio = playAudio->isChecked();
 	cfg.hwDecode = hwDecode->isChecked();
+
+	cfg.sport = sport->currentData().toString().toStdString();
+	cfg.highlightNewReplays = highlightNewReplays->isChecked();
+	cfg.highlightsScene = highlightsScene->text().trimmed().toStdString();
+	cfg.highlightsSpeed = highlightsSpeed->currentData().toDouble();
+	cfg.loopHighlights = loopHighlights->isChecked();
 	return cfg;
 }
 

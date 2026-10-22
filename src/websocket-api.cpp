@@ -111,6 +111,8 @@ SIMPLE(reqReturnToLive, c.returnToLive())
 SIMPLE(reqNextAngle, c.nextAngle())
 SIMPLE(reqPrevAngle, c.prevAngle())
 SIMPLE(reqRefresh, c.refreshEvents())
+SIMPLE(reqNextMatchPhase, c.nextMatchPhase())
+SIMPLE(reqNewMatch, c.newMatch())
 
 #undef SIMPLE
 
@@ -310,6 +312,64 @@ void reqExportEvent(obs_data_t *request, obs_data_t *response, void *)
 	});
 }
 
+void reqGetMatch(obs_data_t *, obs_data_t *response, void *)
+{
+	ReplayController *c = controller.load();
+	if (!c)
+		return fail(response, "Replay Cue is shutting down");
+	OBSDataAutoRelease snap = c->matchSnapshot();
+	obs_data_apply(response, snap);
+	obs_data_set_bool(response, "ok", true);
+}
+
+void reqSetMatchPhase(obs_data_t *request, obs_data_t *response, void *)
+{
+	if (!obs_data_has_user_value(request, "phase"))
+		return fail(response, "pass \"phase\" (0 = pre-match; see GetMatch)");
+	const int phase = (int)obs_data_get_int(request, "phase");
+	queueAction(response, [phase](ReplayController &c) { c.setMatchPhase(phase); });
+}
+
+void reqPlayHighlights(obs_data_t *request, obs_data_t *response, void *)
+{
+	const int reel = obs_data_has_user_value(request, "reel") ? (int)obs_data_get_int(request, "reel") : -1;
+	const bool hasLoop = obs_data_has_user_value(request, "loop");
+	const bool loop = obs_data_get_bool(request, "loop");
+	queueAction(response, [reel, hasLoop, loop](ReplayController &c) {
+		if (hasLoop)
+			c.setHighlightsLoop(loop);
+		c.playHighlights(reel);
+	});
+}
+
+void reqSetHighlight(obs_data_t *request, obs_data_t *response, void *)
+{
+	std::string id;
+	if (!resolveEventId(request, response, id))
+		return;
+	const bool hasValue = obs_data_has_user_value(request, "highlight");
+	const bool on = obs_data_get_bool(request, "highlight");
+	queueAction(response, [id, hasValue, on](ReplayController &c) {
+		const QString target = QString::fromStdString(id.empty() ? c.selectedEventId() : id);
+		if (hasValue)
+			c.setHighlight(target, on);
+		else
+			c.toggleHighlight(target);
+	});
+}
+
+void reqSetEventPeriod(obs_data_t *request, obs_data_t *response, void *)
+{
+	std::string id;
+	if (!resolveEventId(request, response, id))
+		return;
+	if (id.empty() || !obs_data_has_user_value(request, "period"))
+		return fail(response, "pass \"id\" (or \"index\") and \"period\"");
+	const int period = (int)obs_data_get_int(request, "period");
+	queueAction(response,
+		    [id, period](ReplayController &c) { c.setEventPeriod(QString::fromStdString(id), period); });
+}
+
 void reqSaveUiSnapshot(obs_data_t *request, obs_data_t *response, void *)
 {
 	const QString folder = QString::fromUtf8(obs_data_get_string(request, "folder"));
@@ -360,6 +420,13 @@ const Request kRequests[] = {
 	{"ToggleFavorite", reqToggleFavorite},
 	{"ExportEvent", reqExportEvent},
 	{"RefreshEvents", reqRefresh},
+	{"GetMatch", reqGetMatch},
+	{"SetMatchPhase", reqSetMatchPhase},
+	{"NextMatchPhase", reqNextMatchPhase},
+	{"NewMatch", reqNewMatch},
+	{"PlayHighlights", reqPlayHighlights},
+	{"SetHighlight", reqSetHighlight},
+	{"SetEventPeriod", reqSetEventPeriod},
 	{"SaveUiSnapshot", reqSaveUiSnapshot},
 };
 

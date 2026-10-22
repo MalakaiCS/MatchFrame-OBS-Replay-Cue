@@ -5,6 +5,41 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
+## [Unreleased]
+
+### Added
+
+- Sports: pick football (soccer), rugby union, rugby league, Australian rules
+  (AFL), Gaelic football / hurling, netball, hockey, basketball, American
+  football or ice hockey in Settings → Sport. The sport sets the match
+  structure (halves, quarters or periods), the names of its breaks and its
+  quick tags.
+- Match bar in the dock to move the match on (Start 1st Half → Half Time →
+  Start 2nd Half → Full Time). Replays are stamped with the period they were
+  saved in; a replay saved during a break belongs to the period that just
+  ended. Replays can be moved to another period from their right-click menu.
+- Highlights tab with a reel for every break: Half Time covers the first half,
+  Full Time the whole match, and other breaks the period that just finished.
+  Replays join the reel automatically and can be ticked in or out. Play
+  highlights plays the reel oldest first, ⏮/⏭ step through it, and Loop keeps
+  it going through the break until Back to Live.
+- Optional highlights scene (for a HALF TIME HIGHLIGHTS graphic) and
+  highlights speed.
+- New match starts the next game with its own empty reels; the match state
+  survives an OBS restart.
+- Hotkeys: Next match period / break, Play highlights, Add / remove selected
+  replay in highlights. The **H** key does the same in the dock.
+- obs-websocket requests `GetMatch`, `NextMatchPhase`, `SetMatchPhase`,
+  `NewMatch`, `PlayHighlights`, `SetHighlight` and `SetEventPeriod`, and the
+  vendor events `MatchPhaseChanged` and `HighlightsStarted`. `GetStatus`
+  reports the match phase, and replays carry `highlight`, `period` and `match`.
+
+### Fixed
+
+- Starting a replay while a Back to Live transition was still running could
+  stop the new replay as soon as the transition finished, leaving the replay
+  scene empty on air.
+
 ## [1.0.0] - 2026-10-22
 
 First release of Replay Cue: multi-angle instant replay inside OBS Studio.
@@ -47,4 +82,5 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
+[Unreleased]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/compare/1.0.0...HEAD
 [1.0.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.0.0

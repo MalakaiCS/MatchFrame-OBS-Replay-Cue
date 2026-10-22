@@ -29,12 +29,15 @@ class QHBoxLayout;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QTabWidget;
 class QTableWidget;
 class QTimer;
 class QToolButton;
 
 namespace rc {
 
+class HighlightsTab;
+class MatchBar;
 class ReplayController;
 
 /* The "Replay Cue" dock: capture status, marking, the event list and the
@@ -62,6 +65,8 @@ private:
 	void renameSelected();
 	void deleteSelected();
 	void exportSelected(int angle, bool trim);
+	void toggleHighlightSelected();
+	void onMatchChanged();
 
 	ReplayController *controller;
 
@@ -73,7 +78,10 @@ private:
 	QPushButton *instantButton;
 	QPushButton *instantPlayButton;
 	QLabel *markLabel;
+	MatchBar *matchBar;
+	QTabWidget *tabs;
 	QTableWidget *table;
+	HighlightsTab *highlightsTab;
 	QHBoxLayout *angleLayout;
 	QButtonGroup *angleGroup;
 	std::vector<std::string> angleLabels;

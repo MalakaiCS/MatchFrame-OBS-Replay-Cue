@@ -477,6 +477,9 @@ ClipResult ClipWriter::process(ClipJob &job)
 	event.id = "rc:" + job.baseName;
 	event.name = job.name;
 	event.tag = job.tag;
+	event.highlight = job.highlight;
+	event.period = job.period;
+	event.match = job.match;
 	event.number = job.number;
 	event.created = job.created;
 	event.outUsec = job.outUsec;
