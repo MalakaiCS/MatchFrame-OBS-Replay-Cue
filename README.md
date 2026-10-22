@@ -231,7 +231,8 @@ The project follows the official
 [OBS plugin template](https://github.com/obsproject/obs-plugintemplate).
 Pushing to GitHub runs `.github/workflows/push.yaml`, which builds and packages
 Windows, macOS and Ubuntu artifacts. Tagging a release (`1.0.0`) creates a
-draft GitHub release with the Windows `.zip`, macOS `.pkg` and Ubuntu `.deb`. `buildspec.json` pins OBS 32.2.2 and the
+draft GitHub release with the Windows `.zip`, macOS `.pkg` and Ubuntu `.deb`,
+using that version's section of `CHANGELOG.md` as the release notes. `buildspec.json` pins OBS 32.2.2 and the
 matching obs-deps (`2026-07-15`).
 
 Local builds use the template presets:
