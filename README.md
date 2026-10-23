@@ -75,9 +75,18 @@ Download the package for your platform from the
 
 | Platform | Install |
 |---|---|
-| Windows | Extract the `.zip` into `C:\ProgramData\obs-studio\plugins\` (you should end up with `…\plugins\obs-replay-cue\bin\64bit\obs-replay-cue.dll`) |
+| Windows | Close OBS and run the installer, `obs-replay-cue-<version>-windows-x64-Installer.exe`. Or extract the `.zip` into `C:\ProgramData\obs-studio\plugins\` (you should end up with `…\plugins\obs-replay-cue\bin\64bit\obs-replay-cue.dll`) |
 | macOS | Open the `.pkg`, or copy `obs-replay-cue.plugin` into `~/Library/Application Support/obs-studio/plugins/` |
 | Linux | Install the `.deb` |
+
+The Windows installer puts the plugin in
+`C:\ProgramData\obs-studio\plugins\obs-replay-cue`, where OBS Studio looks for
+plugins, and checks that OBS Studio is closed and is a version Replay Cue works
+with. Running it again installs over the old version; it also replaces a copy
+installed from the `.zip`. It is not code-signed, so Windows SmartScreen may say
+"Windows protected your PC": click **More info → Run anyway**. To remove the
+plugin, uninstall **Replay Cue for OBS Studio** in Settings → Apps; your
+settings and replays are kept.
 
 The macOS package is only signed and notarized if you add Apple signing
 secrets to the GitHub repository (see the template's documentation);
@@ -405,12 +414,13 @@ The project follows the official
 [OBS plugin template](https://github.com/obsproject/obs-plugintemplate).
 Pushing to GitHub runs `.github/workflows/push.yaml`, which builds and packages
 Windows, macOS and Ubuntu artifacts. Tagging a release (`1.0.0`) creates a
-draft GitHub release with the Windows `.zip`, macOS `.pkg` and Ubuntu `.deb`,
-using that version's section of `CHANGELOG.md` as the release notes. To
-release without pushing a tag, run the **Push** workflow from the Actions tab
-on `main` with the version (`1.0.0`): it builds, creates the tag and publishes
-the release. `buildspec.json` pins OBS 32.2.2 and the matching obs-deps
-(`2026-07-15`).
+draft GitHub release with the Windows installer and `.zip`, macOS `.pkg` and
+Ubuntu `.deb`, using that version's section of `CHANGELOG.md` as the release
+notes. The Windows installer is built with Inno Setup from
+`cmake/windows/resources/installer-Windows.iss`. To release without pushing a
+tag, run the **Push** workflow from the Actions tab on `main` with the version
+(`1.0.0`): it builds, creates the tag and publishes the release.
+`buildspec.json` pins OBS 32.2.2 and the matching obs-deps (`2026-07-15`).
 
 Local builds use the template presets:
 
