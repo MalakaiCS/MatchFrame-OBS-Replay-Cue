@@ -31,6 +31,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 struct AVFrame;
+struct SwsContext;
 
 namespace rc {
 
@@ -76,18 +77,21 @@ struct PlayerStatus {
 	double duration = 0;
 	double frameDuration = 1.0 / 60.0;
 	uint64_t framesShown = 0; /* frames output since the event loaded */
+	uint64_t fades = 0;       /* times the player faded into the next replay by itself */
 	std::string error;
 };
 
 const char *playerStateName(PlayerState state);
 
 class AngleDecoder;
+struct AudioRamp;
 
 /*
  * The "Replay Cue Player" source. Decodes every angle of an event in lockstep
  * on one shared clock and shows the selected one, so switching angles
  * mid-replay is instant and frame-accurate. Slow motion simply runs the clock
  * slower; its audio is time-stretched, slowed down, or muted (SlowAudio).
+ * A highlights reel cross-fades from one replay into the next (setNext).
  *
  * All public methods are thread-safe.
  */
@@ -97,6 +101,11 @@ public:
 	~ReplayPlayer();
 
 	void load(const PlayRequest &request);
+	/* The replay to fade into `fade` seconds before this one ends. It is
+	 * opened in the background now, so the fade starts on time; load(),
+	 * stop() and clearNext() drop it. */
+	void setNext(const PlayRequest &request, double fade);
+	void clearNext();
 	void play();
 	void pause();
 	void togglePause();
@@ -118,7 +127,9 @@ private:
 	void doStop();
 	void tick();
 	/* ahead: seconds until the frame's first sample is due on the speaker */
-	void outputStretched(const AVFrame *frame, double ahead, double speedNow);
+	void outputStretched(const AVFrame *frame, double ahead, double speedNow, const AudioRamp *ramp);
+	void startFadeLocked(int64_t now, std::vector<std::unique_ptr<AngleDecoder>> &retired);
+	void dropNextLocked(std::vector<std::unique_ptr<AngleDecoder>> &retired);
 	double clockLocked(int64_t now) const;
 	void seekLocked(double position);
 
@@ -165,6 +176,38 @@ private:
 	uint64_t stretchFrames = 0;  /* stretched frames output since then */
 	std::vector<float> stretchIn;
 	std::vector<float> stretchOut;
+	std::vector<float> rampBuffer;
+
+	/* the next replay, opened ahead (setNext) */
+	std::unique_ptr<PlayRequest> nextRequest;
+	std::vector<std::unique_ptr<AngleDecoder>> nextDecoders;
+	bool nextReady = false; /* nextDecoders are open and decoding */
+	double nextFade = 0;
+	double nextLongest = 0;
+	double nextFrameDuration = 0;
+	uint64_t nextGeneration = 0;
+	uint64_t nextToken = 0; /* bumped to throw away a preload still opening */
+	uint64_t generationCounter = 0;
+	std::thread preloader;
+
+	/* the replay fading out (clock thread only, but set up under the mutex) */
+	std::unique_ptr<AngleDecoder> outgoing;
+	AVFrame *outFrame = nullptr;
+	bool outDirty = false;
+	double outBase = 0;   /* its position when the fade started */
+	int64_t outStart = 0; /* nowUsec() then */
+	double outSpeed = 1.0;
+	double outOffset = 0;
+	uint64_t outGeneration = 0;
+	int outAngle = 0;
+	int64_t fadeStart = 0;  /* nowUsec() */
+	int64_t fadeLength = 0; /* microseconds */
+	bool fadeAbort = false; /* pause, seek: finish the fade at once */
+	int64_t lastFadeOutput = 0;
+	uint64_t fades = 0;
+	AVFrame *blendFrame = nullptr;
+	AVFrame *blendSource = nullptr;
+	SwsContext *blendSws = nullptr;
 };
 
 void registerPlayerSource();

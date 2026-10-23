@@ -22,11 +22,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QToolButton>
@@ -49,6 +52,77 @@ QString qs(const std::string &s)
 enum Column { ColUse, ColNumber, ColName, ColTag, ColPeriod, ColLength, ColCount };
 constexpr int kIdRole = Qt::UserRole + 1;
 
+/* New match / Edit match: the match name and the two teams. */
+class MatchDialog : public QDialog {
+public:
+	MatchDialog(const QString &title, const MatchInfo &match, const QString &warning, const QString &okText,
+		    QWidget *parent)
+		: QDialog(parent)
+	{
+		setWindowTitle(title);
+		auto *root = new QVBoxLayout(this);
+		if (!warning.isEmpty()) {
+			auto *note = new QLabel(warning);
+			note->setWordWrap(true);
+			note->setStyleSheet("color: #fb8c00;");
+			root->addWidget(note);
+		}
+
+		auto *form = new QFormLayout();
+		nameEdit = new QLineEdit(qs(match.name));
+		nameEdit->setPlaceholderText(T("Match.NamePlaceholder"));
+		form->addRow(T("Match.Name"), nameEdit);
+		auto *teams = new QHBoxLayout();
+		homeEdit = new QLineEdit(qs(match.home));
+		homeEdit->setPlaceholderText(T("Match.Home"));
+		awayEdit = new QLineEdit(qs(match.away));
+		awayEdit->setPlaceholderText(T("Match.Away"));
+		teams->addWidget(homeEdit, 1);
+		teams->addWidget(new QLabel(T("Match.Versus")));
+		teams->addWidget(awayEdit, 1);
+		form->addRow(T("Match.Teams"), teams);
+		root->addLayout(form);
+
+		folderLabel = new QLabel();
+		folderLabel->setWordWrap(true);
+		folderLabel->setTextFormat(Qt::PlainText);
+		root->addWidget(folderLabel);
+
+		auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+		buttons->button(QDialogButtonBox::Ok)->setText(okText);
+		root->addWidget(buttons);
+		connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+		connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+		for (QLineEdit *edit : {nameEdit, homeEdit, awayEdit})
+			connect(edit, &QLineEdit::textChanged, this, [this]() { updateFolder(); });
+		updateFolder();
+		nameEdit->selectAll();
+		nameEdit->setFocus();
+		setMinimumWidth(420);
+	}
+
+	QString name() const { return nameEdit->text().trimmed(); }
+	QString home() const { return homeEdit->text().trimmed(); }
+	QString away() const { return awayEdit->text().trimmed(); }
+
+private:
+	void updateFolder()
+	{
+		MatchInfo m;
+		m.name = name().toStdString();
+		m.home = home().toStdString();
+		m.away = away().toStdString();
+		if (m.name.empty() && m.home.empty() && m.away.empty())
+			m.name = nameEdit->placeholderText().toStdString();
+		folderLabel->setText(QString(T("Match.FolderPreview")).arg(qs(matchFolderName(m))));
+	}
+
+	QLineEdit *nameEdit;
+	QLineEdit *homeEdit;
+	QLineEdit *awayEdit;
+	QLabel *folderLabel;
+};
+
 } // namespace
 
 /* ------------------------------------------------------------------------- */
@@ -60,6 +134,9 @@ MatchBar::MatchBar(ReplayController *c, QWidget *parent) : QWidget(parent), cont
 	row->setContentsMargins(0, 0, 0, 0);
 	label = new QLabel();
 	label->setTextFormat(Qt::RichText);
+	/* a long match title must not widen the dock */
+	label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	label->setMinimumWidth(60);
 	nextButton = new QPushButton();
 	menuButton = new QToolButton();
 	menuButton->setText(QString::fromUtf8("…"));
@@ -85,15 +162,23 @@ void MatchBar::refresh()
 		return;
 
 	const int phase = controller->matchPhase();
+	const bool open = controller->matchOpen();
 	const QString phaseText = qs(phaseName(sport, phase)).toHtmlEscaped();
+	const QString title = open ? qs(matchTitle(controller->openMatch())) : T(sport.nameKey);
 	label->setText(QString("<b>%1</b> &nbsp;&middot;&nbsp; %2")
-			       .arg(T(sport.nameKey).toHtmlEscaped(),
+			       .arg(title.toHtmlEscaped(),
 				    isBreakPhase(sport, phase)
 					    ? QString("<span style='color:#fb8c00'><b>%1</b></span>").arg(phaseText)
 					    : phaseText));
+	label->setToolTip(
+		open ? QString(T("Match.FolderTip"))
+				.arg(title, T(sport.nameKey),
+				     qs(controller->openMatch().folder.empty() ? controller->config().folder
+									       : controller->openMatch().folder))
+		     : T("Match.NoMatchTip"));
 
-	if (isFullTime(sport, phase)) {
-		nextButton->setText(T("Match.NewMatch"));
+	if (isFullTime(sport, phase) || (!open && phase == 0)) {
+		nextButton->setText(T("Match.NewMatchMenu"));
 		nextButton->setToolTip(T("Match.NewMatchTip"));
 	} else if (phase % 2) {
 		/* a period is in play: the button calls the break (or full time) */
@@ -108,8 +193,9 @@ void MatchBar::refresh()
 
 void MatchBar::advance()
 {
-	if (isFullTime(controller->sport(), controller->matchPhase()))
-		confirmNewMatch();
+	if (isFullTime(controller->sport(), controller->matchPhase()) ||
+	    (!controller->matchOpen() && controller->matchPhase() == 0))
+		startNewMatch();
 	else
 		controller->nextMatchPhase();
 }
@@ -126,18 +212,67 @@ void MatchBar::fillMenu()
 		connect(action, &QAction::triggered, this, [this, phase]() { controller->setMatchPhase(phase); });
 	}
 	menu->addSeparator();
-	connect(menu->addAction(T("Match.NewMatchMenu")), &QAction::triggered, this, &MatchBar::confirmNewMatch);
+	connect(menu->addAction(T("Match.NewMatchMenu")), &QAction::triggered, this, &MatchBar::startNewMatch);
+	QAction *edit = menu->addAction(T("Match.EditMatchMenu"));
+	edit->setEnabled(controller->matchOpen());
+	connect(edit, &QAction::triggered, this, &MatchBar::editMatch);
+
+	QMenu *openMenu = menu->addMenu(T("Match.OpenMatchMenu"));
+	const std::vector<MatchInfo> matches = controller->matches();
+	for (const MatchInfo &m : matches) {
+		QAction *action = openMenu->addAction(
+			QString::fromUtf8("%1  ·  %2").arg(qs(matchTitle(m)), qs(phaseName(sport, m.phase))));
+		action->setCheckable(true);
+		action->setChecked(m.id == controller->config().matchId);
+		const QString id = qs(m.id);
+		connect(action, &QAction::triggered, this, [this, id]() { controller->openMatch(id); });
+	}
+	if (matches.empty())
+		openMenu->addAction(T("Match.NoMatches"))->setEnabled(false);
+
+	menu->addSeparator();
+	QAction *all = menu->addAction(T("Match.ShowAll"));
+	all->setCheckable(true);
+	all->setChecked(controller->config().showAllMatches);
+	all->setToolTip(T("Match.ShowAllTip"));
+	connect(all, &QAction::triggered, this, [this](bool on) { controller->setShowAllMatches(on); });
 }
 
-void MatchBar::confirmNewMatch()
+void MatchBar::startNewMatch()
 {
-	if (controller->matchPhase() > 0) {
-		auto answer = QMessageBox::question(this, T("Match.NewMatch"), T("Match.NewMatchText"),
-						    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-		if (answer != QMessageBox::Yes)
-			return;
-	}
-	controller->newMatch();
+	const Sport &sport = controller->sport();
+	const int phase = controller->matchPhase();
+	QString warning;
+	if (controller->matchOpen() && phase > 0 && !isFullTime(sport, phase))
+		warning = QString(T("Match.InProgress"))
+				  .arg(qs(matchTitle(controller->openMatch())), qs(phaseName(sport, phase)));
+	MatchInfo fresh;
+	fresh.name = controller->defaultMatchName().toStdString();
+	MatchDialog dialog(T("Match.NewMatch"), fresh, warning, T("Match.Create"), this);
+	if (dialog.exec() == QDialog::Accepted)
+		controller->newMatch(dialog.name(), dialog.home(), dialog.away());
+}
+
+void MatchBar::editMatch()
+{
+	if (!controller->matchOpen())
+		return;
+	MatchDialog dialog(T("Match.EditMatch"), controller->openMatch(), QString(), T("Match.Save"), this);
+	if (dialog.exec() == QDialog::Accepted)
+		controller->editMatch(dialog.name(), dialog.home(), dialog.away());
+}
+
+void saveMatchDialogSnapshot(ReplayController *controller, const QString &path)
+{
+	MatchInfo example;
+	example.name = controller->defaultMatchName().toStdString();
+	example.home = "Leeds";
+	example.away = "York";
+	MatchDialog dialog(T("Match.NewMatch"), example, QString(), T("Match.Create"), nullptr);
+	dialog.setAttribute(Qt::WA_DontShowOnScreen);
+	dialog.show();
+	dialog.grab().save(path);
+	dialog.hide();
 }
 
 /* ------------------------------------------------------------------------- */

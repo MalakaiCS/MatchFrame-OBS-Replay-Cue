@@ -202,7 +202,111 @@ void freeQueue(std::deque<QueuedFrame> &queue)
 	queue.clear();
 }
 
+bool isHdrTransfer(int trc)
+{
+	return trc == AVCOL_TRC_SMPTE2084 || trc == AVCOL_TRC_ARIB_STD_B67;
+}
+
+/* (Re)allocates `frame` as a picture of this format and size. */
+bool ensurePicture(AVFrame *frame, int format, int width, int height)
+{
+	if (frame->format == format && frame->width == width && frame->height == height && frame->data[0])
+		return true;
+	av_frame_unref(frame);
+	frame->format = format;
+	frame->width = width;
+	frame->height = height;
+	return av_frame_get_buffer(frame, 0) >= 0;
+}
+
+/* Mixes two pictures into `out`: alpha 0 shows `from`, 1 shows `to`. `from`
+ * is converted to the format and size of `to` first if they differ (into
+ * `scratch`). False if the two cannot be mixed, such as HDR with SDR. */
+bool blendPictures(const AVFrame *from, const AVFrame *to, double alpha, AVFrame *out, AVFrame *scratch,
+		   SwsContext *&sws)
+{
+	const enum AVPixelFormat format = (enum AVPixelFormat)to->format;
+	const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(format);
+	if (!desc || (desc->flags & (AV_PIX_FMT_FLAG_BITSTREAM | AV_PIX_FMT_FLAG_HWACCEL | AV_PIX_FMT_FLAG_PAL)) ||
+	    isHdrTransfer(from->color_trc) != isHdrTransfer(to->color_trc))
+		return false;
+	if (from->format != to->format || from->width != to->width || from->height != to->height) {
+		sws = sws_getCachedContext(sws, from->width, from->height, (enum AVPixelFormat)from->format, to->width,
+					   to->height, format, SWS_BILINEAR, nullptr, nullptr, nullptr);
+		if (!sws || !ensurePicture(scratch, format, to->width, to->height))
+			return false;
+		sws_scale(sws, from->data, from->linesize, 0, from->height, scratch->data, scratch->linesize);
+		from = scratch;
+	}
+	if (!ensurePicture(out, format, to->width, to->height))
+		return false;
+
+	/* 10-bit and deeper formats keep 16-bit samples */
+	const bool wide = desc->comp[0].depth > 8;
+	const uint32_t shift = wide ? 10 : 8;
+	const uint32_t one = 1u << shift;
+	const uint32_t w = (uint32_t)std::lround(std::clamp(alpha, 0.0, 1.0) * one);
+	const int planes = av_pix_fmt_count_planes(format);
+	for (int p = 0; p < planes; p++) {
+		const int bytes = av_image_get_linesize(format, to->width, p);
+		const int rows = (p == 1 || p == 2) ? AV_CEIL_RSHIFT(to->height, (int)desc->log2_chroma_h) : to->height;
+		if (bytes <= 0)
+			return false;
+		for (int y = 0; y < rows; y++) {
+			const uint8_t *a = from->data[p] + (ptrdiff_t)y * from->linesize[p];
+			const uint8_t *b = to->data[p] + (ptrdiff_t)y * to->linesize[p];
+			uint8_t *o = out->data[p] + (ptrdiff_t)y * out->linesize[p];
+			if (wide) {
+				const auto *a16 = reinterpret_cast<const uint16_t *>(a);
+				const auto *b16 = reinterpret_cast<const uint16_t *>(b);
+				auto *o16 = reinterpret_cast<uint16_t *>(o);
+				for (int i = 0; i < bytes / 2; i++)
+					o16[i] = (uint16_t)(((uint32_t)a16[i] * (one - w) + (uint32_t)b16[i] * w +
+							     one / 2) >>
+							    shift);
+			} else {
+				for (int i = 0; i < bytes; i++)
+					o[i] = (uint8_t)(((uint32_t)a[i] * (one - w) + (uint32_t)b[i] * w + one / 2) >>
+							 shift);
+			}
+		}
+	}
+	av_frame_copy_props(out, to);
+	return true;
+}
+
 } // namespace
+
+/* The sound dips across a fade between two replays: the old one fades out
+ * over the first half, the new one in over the second. */
+struct AudioRamp {
+	uint64_t startNs = 0;
+	uint64_t lengthNs = 1;
+	bool in = true;
+
+	float gainAt(uint64_t ns) const
+	{
+		const double rel = ns <= startNs ? 0.0 : (double)(ns - startNs) / (double)lengthNs;
+		return (float)std::clamp(in ? rel * 2.0 - 1.0 : 1.0 - rel * 2.0, 0.0, 1.0);
+	}
+
+	/* scales interleaved samples starting at `ns`, `nsPerFrame` apart */
+	void apply(std::vector<float> &samples, int channels, uint64_t ns, double nsPerFrame) const
+	{
+		const size_t frames = samples.size() / (size_t)channels;
+		for (size_t i = 0; i < frames; i++) {
+			const float gain = gainAt(ns + (uint64_t)((double)i * nsPerFrame));
+			for (int c = 0; c < channels; c++)
+				samples[i * (size_t)channels + (size_t)c] *= gain;
+		}
+	}
+
+	bool silentOrFull(uint64_t from, uint64_t to) const
+	{
+		const float a = gainAt(from), b = gainAt(to);
+		return a == b && (a == 0.0f || a == 1.0f);
+	}
+};
 
 /* ------------------------------------------------------------------------- */
 /* One file, decoded on its own thread into a small queue of frames.         */
@@ -650,6 +754,8 @@ private:
 
 ReplayPlayer::ReplayPlayer(obs_source_t *source) : obsSource(source)
 {
+	blendFrame = av_frame_alloc();
+	blendSource = av_frame_alloc();
 	thread = std::thread([this]() { run(); });
 }
 
@@ -658,19 +764,100 @@ ReplayPlayer::~ReplayPlayer()
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		quit = true;
+		nextToken++;
 	}
 	cv.notify_all();
 	if (thread.joinable())
 		thread.join();
+	if (preloader.joinable())
+		preloader.join();
 	decoders.clear();
+	nextDecoders.clear();
+	outgoing.reset();
 	for (AVFrame *&frame : current)
 		av_frame_free(&frame);
+	av_frame_free(&outFrame);
+	av_frame_free(&blendFrame);
+	av_frame_free(&blendSource);
+	sws_freeContext(blendSws);
+}
+
+void ReplayPlayer::dropNextLocked(std::vector<std::unique_ptr<AngleDecoder>> &retired)
+{
+	nextToken++;
+	nextRequest.reset();
+	nextReady = false;
+	for (auto &decoder : nextDecoders)
+		retired.push_back(std::move(decoder));
+	nextDecoders.clear();
+}
+
+void ReplayPlayer::setNext(const PlayRequest &request, double fade)
+{
+	std::vector<std::unique_ptr<AngleDecoder>> retired;
+	uint64_t token = 0;
+	uint64_t gen = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		dropNextLocked(retired);
+		if (fade <= 0 || quit)
+			return;
+		nextRequest = std::make_unique<PlayRequest>(request);
+		nextFade = fade;
+		token = nextToken;
+		gen = nextGeneration = ++generationCounter;
+	}
+	retired.clear();
+	if (preloader.joinable())
+		preloader.join();
+
+	/* opening files and starting decoders takes a while: do it off the
+	 * clock thread so the replay on air keeps playing smoothly */
+	preloader = std::thread([this, request, token, gen]() {
+		std::vector<std::unique_ptr<AngleDecoder>> fresh;
+		double longest = 0;
+		double shortestFrame = 0;
+		bool anyOk = false;
+		for (const PlayAngle &angle : request.angles) {
+			auto decoder = std::make_unique<AngleDecoder>(angle, request.hwDecode, request.audio);
+			std::string err;
+			if (decoder->open(err)) {
+				anyOk = true;
+				longest = std::max(longest, decoder->duration() - angle.inOffset);
+				const double fd = decoder->frameDuration();
+				if (fd > 0 && (shortestFrame == 0 || fd < shortestFrame))
+					shortestFrame = fd;
+				decoder->seek(angle.inOffset + std::max(0.0, request.startAt), gen);
+				decoder->start();
+			} else {
+				obs_log(LOG_WARNING, "[player] %s", err.c_str());
+			}
+			fresh.push_back(std::move(decoder));
+		}
+		/* declared after `fresh`: unlocks before a stale preload is freed */
+		std::lock_guard<std::mutex> lock(mutex);
+		if (token != nextToken || quit || !anyOk)
+			return;
+		nextDecoders = std::move(fresh);
+		nextLongest = longest;
+		nextFrameDuration = shortestFrame > 0 ? shortestFrame : 1.0 / 60.0;
+		nextReady = true;
+	});
+}
+
+void ReplayPlayer::clearNext()
+{
+	std::vector<std::unique_ptr<AngleDecoder>> retired;
+	std::lock_guard<std::mutex> lock(mutex);
+	dropNextLocked(retired);
 }
 
 void ReplayPlayer::load(const PlayRequest &request)
 {
+	std::vector<std::unique_ptr<AngleDecoder>> retired;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
+		dropNextLocked(retired);
 		pendingLoad = std::make_unique<PlayRequest>(request);
 		pendingStop = false;
 		state = PlayerState::Loading;
@@ -693,7 +880,7 @@ void ReplayPlayer::seekLocked(double position)
 	if (decoders.empty())
 		return;
 	position = std::clamp(position, 0.0, std::max(0.0, duration));
-	generation++;
+	generation = ++generationCounter;
 	for (auto &decoder : decoders)
 		if (decoder->isOk())
 			decoder->seek(decoder->info().inOffset + position, generation);
@@ -701,6 +888,7 @@ void ReplayPlayer::seekLocked(double position)
 	clockStart = nowUsec();
 	if (state == PlayerState::Ended)
 		state = PlayerState::Paused;
+	fadeAbort = true;
 	waitingForFrames = true;
 	waitStarted = clockStart;
 	angleDirty = true;
@@ -739,6 +927,7 @@ void ReplayPlayer::pause()
 		state = PlayerState::Paused;
 		waitingForFrames = false;
 	}
+	fadeAbort = true; /* a paused mix of two replays would look broken */
 }
 
 void ReplayPlayer::togglePause()
@@ -756,8 +945,10 @@ void ReplayPlayer::togglePause()
 
 void ReplayPlayer::stop(bool clearFrame)
 {
+	std::vector<std::unique_ptr<AngleDecoder>> retired;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
+		dropNextLocked(retired);
 		pendingLoad.reset();
 		pendingStop = true;
 		pendingClear = pendingClear || clearFrame;
@@ -849,6 +1040,7 @@ PlayerStatus ReplayPlayer::status() const
 	st.frameDuration = frameDuration;
 	st.error = error;
 	st.framesShown = framesShown;
+	st.fades = fades;
 	st.position = std::min(clockLocked(nowUsec()), duration);
 	for (const auto &decoder : decoders)
 		st.angleLabels.push_back(decoder->info().label);
@@ -890,11 +1082,13 @@ void ReplayPlayer::run()
 void ReplayPlayer::doStop()
 {
 	std::vector<std::unique_ptr<AngleDecoder>> old;
+	std::unique_ptr<AngleDecoder> fading;
 	bool clear;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		old.swap(decoders);
-		generation++;
+		fading = std::move(outgoing);
+		generation = ++generationCounter;
 		state = PlayerState::Idle;
 		eventId.clear();
 		eventName.clear();
@@ -905,6 +1099,8 @@ void ReplayPlayer::doStop()
 		pendingClear = false;
 	}
 	old.clear();
+	fading.reset();
+	av_frame_free(&outFrame);
 	for (AVFrame *&frame : current)
 		av_frame_free(&frame);
 	current.clear();
@@ -938,14 +1134,16 @@ void ReplayPlayer::doLoad(const PlayRequest &request)
 	}
 
 	std::vector<std::unique_ptr<AngleDecoder>> old;
+	std::unique_ptr<AngleDecoder> fading;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		if (pendingLoad || quit)
 			return; /* superseded while files were opening */
 
 		old.swap(decoders);
+		fading = std::move(outgoing);
 		decoders = std::move(fresh);
-		generation++;
+		generation = ++generationCounter;
 		duration = request.duration > 0 ? request.duration : longest;
 		frameDuration = shortestFrame > 0 ? shortestFrame : 1.0 / 60.0;
 		speed = std::clamp(request.speed, 0.05, 4.0);
@@ -972,6 +1170,8 @@ void ReplayPlayer::doLoad(const PlayRequest &request)
 		}
 	}
 	old.clear();
+	fading.reset();
+	av_frame_free(&outFrame);
 
 	for (AVFrame *&frame : current)
 		av_frame_free(&frame);
@@ -1004,28 +1204,6 @@ static void outputVideo(obs_source_t *source, const AVFrame *frame)
 	video_format_get_parameters_for_format(cs, range, format, out.color_matrix, out.color_range_min,
 					       out.color_range_max);
 	obs_source_output_video(source, &out);
-}
-
-/* rateScale < 1 plays the samples slower, and lower, than they were recorded */
-static void outputAudio(obs_source_t *source, const AVFrame *frame, uint64_t timestamp, double rateScale)
-{
-	enum audio_format format = convertSampleFormat(frame->format);
-	const int channels = frame->ch_layout.nb_channels;
-	enum speaker_layout speakers = convertSpeakers(channels);
-	if (format == AUDIO_FORMAT_UNKNOWN || speakers == SPEAKERS_UNKNOWN)
-		return;
-
-	struct obs_source_audio out = {};
-	const bool planar = av_sample_fmt_is_planar((enum AVSampleFormat)frame->format);
-	const int planes = planar ? std::min(channels, MAX_AV_PLANES) : 1;
-	for (int i = 0; i < planes; i++)
-		out.data[i] = frame->extended_data[i];
-	out.frames = (uint32_t)frame->nb_samples;
-	out.speakers = speakers;
-	out.format = format;
-	out.samples_per_sec = (uint32_t)std::max(1L, std::lround(frame->sample_rate * rateScale));
-	out.timestamp = timestamp;
-	obs_source_output_audio(source, &out);
 }
 
 /* Converts any decoded sample format to interleaved float. */
@@ -1070,7 +1248,42 @@ static bool toInterleavedFloat(const AVFrame *frame, std::vector<float> &out)
 	return true;
 }
 
-void ReplayPlayer::outputStretched(const AVFrame *frame, double ahead, double speedNow)
+/* rateScale < 1 plays the samples slower, and lower, than they were recorded */
+static void outputAudio(obs_source_t *source, const AVFrame *frame, uint64_t timestamp, double rateScale,
+			const AudioRamp *ramp, std::vector<float> &scratch)
+{
+	enum audio_format format = convertSampleFormat(frame->format);
+	const int channels = frame->ch_layout.nb_channels;
+	enum speaker_layout speakers = convertSpeakers(channels);
+	if (format == AUDIO_FORMAT_UNKNOWN || speakers == SPEAKERS_UNKNOWN)
+		return;
+
+	struct obs_source_audio out = {};
+	const uint32_t rate = (uint32_t)std::max(1L, std::lround(frame->sample_rate * rateScale));
+	const double nsPerFrame = 1e9 / rate;
+	const uint64_t endNs = timestamp + (uint64_t)(frame->nb_samples * nsPerFrame);
+	if (ramp && !(ramp->silentOrFull(timestamp, endNs) && ramp->gainAt(timestamp) == 1.0f)) {
+		/* fading: scale a float copy */
+		if (!toInterleavedFloat(frame, scratch))
+			return;
+		ramp->apply(scratch, channels, timestamp, nsPerFrame);
+		out.data[0] = reinterpret_cast<const uint8_t *>(scratch.data());
+		out.format = AUDIO_FORMAT_FLOAT;
+	} else {
+		const bool planar = av_sample_fmt_is_planar((enum AVSampleFormat)frame->format);
+		const int planes = planar ? std::min(channels, MAX_AV_PLANES) : 1;
+		for (int i = 0; i < planes; i++)
+			out.data[i] = frame->extended_data[i];
+		out.format = format;
+	}
+	out.frames = (uint32_t)frame->nb_samples;
+	out.speakers = speakers;
+	out.samples_per_sec = rate;
+	out.timestamp = timestamp;
+	obs_source_output_audio(source, &out);
+}
+
+void ReplayPlayer::outputStretched(const AVFrame *frame, double ahead, double speedNow, const AudioRamp *ramp)
 {
 	const int channels = frame->ch_layout.nb_channels;
 	const enum speaker_layout speakers = convertSpeakers(channels);
@@ -1090,31 +1303,94 @@ void ReplayPlayer::outputStretched(const AVFrame *frame, double ahead, double sp
 	if (!frames)
 		return;
 
+	/* stretched audio is continuous: each block follows the last one */
+	const uint64_t timestamp = stretchStartNs + (uint64_t)((double)stretchFrames * 1e9 / frame->sample_rate);
+	if (ramp)
+		ramp->apply(stretchOut, channels, timestamp, 1e9 / frame->sample_rate);
+
 	struct obs_source_audio out = {};
 	out.data[0] = reinterpret_cast<const uint8_t *>(stretchOut.data());
 	out.frames = (uint32_t)frames;
 	out.speakers = speakers;
 	out.format = AUDIO_FORMAT_FLOAT;
 	out.samples_per_sec = (uint32_t)frame->sample_rate;
-	/* stretched audio is continuous: each block follows the last one */
-	out.timestamp = stretchStartNs + (uint64_t)((double)stretchFrames * 1e9 / frame->sample_rate);
+	out.timestamp = timestamp;
 	obs_source_output_audio(obsSource, &out);
 	stretchFrames += frames;
+}
+
+void ReplayPlayer::startFadeLocked(int64_t now, std::vector<std::unique_ptr<AngleDecoder>> &retired)
+{
+	/* the picture on air keeps playing underneath; its other angles go */
+	const size_t keep = (size_t)selected;
+	outgoing = std::move(decoders[keep]);
+	av_frame_free(&outFrame);
+	outFrame = current[keep];
+	current[keep] = nullptr;
+	outDirty = outFrame != nullptr;
+	outBase = clockLocked(now);
+	outStart = now;
+	outSpeed = speed;
+	outOffset = outgoing->info().inOffset;
+	outGeneration = generation;
+	outAngle = selected;
+	for (auto &decoder : decoders)
+		if (decoder)
+			retired.push_back(std::move(decoder));
+	for (AVFrame *&frame : current)
+		av_frame_free(&frame);
+
+	decoders = std::move(nextDecoders);
+	nextDecoders.clear();
+	nextReady = false;
+	generation = nextGeneration;
+	duration = nextRequest->duration > 0 ? nextRequest->duration : nextLongest;
+	frameDuration = nextFrameDuration;
+	speed = std::clamp(nextRequest->speed, 0.05, 4.0);
+	/* the camera stays as the operator chose it */
+	selected = std::clamp(selected, 0, std::max(0, (int)decoders.size() - 1));
+	playAudio = nextRequest->audio;
+	slowAudio = nextRequest->slowAudio;
+	eventId = nextRequest->eventId;
+	eventName = nextRequest->eventName;
+	error.clear();
+	nextRequest.reset();
+	state = PlayerState::Playing;
+	clockBase = 0;
+	clockStart = now;
+	waitingForFrames = true;
+	waitStarted = now;
+	angleDirty = true;
+	emitStarted = true;
+	framesShown = 0;
+	current.assign(decoders.size(), nullptr);
+
+	fadeStart = now;
+	fadeLength = std::max<int64_t>(1, (int64_t)(nextFade * 1e6));
+	fadeAbort = false;
+	lastFadeOutput = 0;
+	fades++;
 }
 
 void ReplayPlayer::tick()
 {
 	const AVFrame *show = nullptr;
+	const AVFrame *fadeFrom = nullptr; /* with `show`: the two mixed */
+	double alpha = 1.0;
 	std::vector<QueuedFrame> audioOut;
+	std::vector<std::unique_ptr<AngleDecoder>> retired;
+	AVFrame *retiredFrame = nullptr;
 	bool started = false;
 	bool ended = false;
 	bool audible = false;
-	double position = 0;
-	double selectedOffset = 0;
-	double speedNow = 1.0;
-	uint64_t gen = 0;
-	int angleNow = 0;
+	double audioOffset = 0; /* of the replay being heard */
+	double audioPosition = 0;
+	double audioSpeed = 1.0;
+	uint64_t audioGeneration = 0;
+	int audioAngle = 0;
 	SlowAudio slowMode = SlowAudio::Off;
+	AudioRamp ramp;
+	bool ramped = false;
 	const int64_t now = nowUsec();
 
 	{
@@ -1123,6 +1399,15 @@ void ReplayPlayer::tick()
 			return;
 		if (current.size() != decoders.size())
 			current.resize(decoders.size(), nullptr);
+
+		/* the fade into this replay is over, or was cut short */
+		if (outgoing && (fadeAbort || now - fadeStart >= fadeLength)) {
+			retired.push_back(std::move(outgoing));
+			retiredFrame = outFrame;
+			outFrame = nullptr;
+			angleDirty = true;
+		}
+		fadeAbort = false;
 
 		AngleDecoder *sel = decoders[(size_t)selected].get();
 		if (waitingForFrames) {
@@ -1133,7 +1418,13 @@ void ReplayPlayer::tick()
 			}
 		}
 
-		position = clockLocked(now);
+		double position = clockLocked(now);
+		if (nextReady && !outgoing && state == PlayerState::Playing && !waitingForFrames &&
+		    (duration - position) / speed <= nextFade) {
+			startFadeLocked(now, retired);
+			sel = decoders[(size_t)selected].get();
+			position = clockLocked(now);
+		}
 		if (state == PlayerState::Playing && !waitingForFrames && position >= duration) {
 			position = duration;
 			clockBase = duration;
@@ -1143,8 +1434,12 @@ void ReplayPlayer::tick()
 		}
 
 		const bool normalSpeed = std::fabs(speed - 1.0) < 0.001;
-		audible = playAudio && state == PlayerState::Playing && !waitingForFrames &&
-			  (normalSpeed || slowAudio != SlowAudio::Off);
+		/* during a fade the old replay is heard first, then this one */
+		const double fadeRel = outgoing ? (double)(now - fadeStart) / (double)fadeLength : 1.0;
+		const bool outHeard = outgoing && fadeRel < 0.5 && playAudio && outgoing->isOk() &&
+				      (std::fabs(outSpeed - 1.0) < 0.001 || slowAudio != SlowAudio::Off);
+		const bool inHeard = playAudio && state == PlayerState::Playing && !waitingForFrames &&
+				     (normalSpeed || slowAudio != SlowAudio::Off) && !(outgoing && fadeRel < 0.5);
 		/* the stretcher needs ~50 ms of input beyond what it plays */
 		const double lookahead = normalSpeed ? 0.06 : 0.12;
 		for (size_t i = 0; i < decoders.size(); i++) {
@@ -1158,48 +1453,95 @@ void ReplayPlayer::tick()
 				if ((int)i == selected)
 					angleDirty = true;
 			}
-			const bool wanted = audible && (int)i == selected;
+			const bool wanted = inHeard && (int)i == selected;
 			decoder->popAudioUntil(target + (wanted ? lookahead : 0.0), generation,
 					       wanted ? &audioOut : nullptr);
 		}
-		speedNow = speed;
-		gen = generation;
-		angleNow = selected;
-		slowMode = slowAudio;
 
-		if (angleDirty && current[(size_t)selected]) {
+		audible = inHeard;
+		audioOffset = sel->info().inOffset;
+		audioPosition = position;
+		audioSpeed = speed;
+		audioGeneration = generation;
+		audioAngle = selected;
+		if (outgoing) {
+			const double outPosition = outBase + (double)(now - outStart) / 1e6 * outSpeed;
+			const double outTarget = outOffset + outPosition;
+			if (AVFrame *frame = outgoing->popVideoUntil(outTarget + frameDuration * 0.5, outGeneration)) {
+				av_frame_free(&outFrame);
+				outFrame = frame;
+				outDirty = true;
+			}
+			const double outLookahead = std::fabs(outSpeed - 1.0) < 0.001 ? 0.06 : 0.12;
+			outgoing->popAudioUntil(outTarget + (outHeard ? outLookahead : 0.0), outGeneration,
+						outHeard ? &audioOut : nullptr);
+			if (outHeard) {
+				audible = true;
+				audioOffset = outOffset;
+				audioPosition = outPosition;
+				audioSpeed = outSpeed;
+				audioGeneration = outGeneration;
+				audioAngle = outAngle;
+			}
+			ramp.startNs = (uint64_t)fadeStart * 1000;
+			ramp.lengthNs = (uint64_t)fadeLength * 1000;
+			ramp.in = !outHeard;
+			ramped = true;
+			alpha = std::clamp(fadeRel, 0.0, 1.0);
+
+			/* both pictures move: show a new mix whenever either changes */
+			AVFrame *incoming = current[(size_t)selected];
+			const bool due = angleDirty || outDirty ||
+					 now - lastFadeOutput >= (int64_t)(frameDuration * 1e6);
+			if (due && (incoming || outFrame)) {
+				show = incoming ? incoming : outFrame;
+				fadeFrom = incoming ? outFrame : nullptr;
+				angleDirty = false;
+				outDirty = false;
+				lastFadeOutput = now;
+				if (incoming)
+					framesShown++;
+			}
+		} else if (angleDirty && current[(size_t)selected]) {
 			show = current[(size_t)selected];
 			angleDirty = false;
 			framesShown++;
 		}
-		selectedOffset = sel->info().inOffset;
+		slowMode = slowAudio;
 		started = emitStarted;
 		emitStarted = false;
 	}
 
-	/* current[] is only modified on this thread, so `show` stays valid */
-	if (show)
-		outputVideo(obsSource, show);
+	/* current[] and outFrame are only modified on this thread, so the
+	 * frames stay valid */
+	if (show) {
+		if (fadeFrom && blendFrame && blendPictures(fadeFrom, show, alpha, blendFrame, blendSource, blendSws))
+			outputVideo(obsSource, blendFrame);
+		else
+			outputVideo(obsSource, fadeFrom && alpha < 0.5 ? fadeFrom : show);
+	}
 
-	const bool normalSpeed = std::fabs(speedNow - 1.0) < 0.001;
+	const bool normalSpeed = std::fabs(audioSpeed - 1.0) < 0.001;
 	const bool stretch = audible && !normalSpeed && slowMode == SlowAudio::Natural;
-	if (!stretch || gen != stretchGeneration || angleNow != stretchAngle || speedNow != stretchSpeed) {
+	if (!stretch || audioGeneration != stretchGeneration || audioAngle != stretchAngle ||
+	    audioSpeed != stretchSpeed) {
 		/* the next stretched frame starts afresh at the new position */
 		stretching = false;
-		stretchGeneration = gen;
-		stretchAngle = angleNow;
-		stretchSpeed = speedNow;
+		stretchGeneration = audioGeneration;
+		stretchAngle = audioAngle;
+		stretchSpeed = audioSpeed;
 	}
 
 	const uint64_t nowNs = os_gettime_ns();
 	for (QueuedFrame &q : audioOut) {
 		/* file seconds until this frame plays, in real seconds at this speed */
-		const double ahead = (q.time - selectedOffset - position) / speedNow;
+		const double ahead = (q.time - audioOffset - audioPosition) / audioSpeed;
 		if (stretch) {
-			outputStretched(q.frame, ahead, speedNow);
+			outputStretched(q.frame, ahead, audioSpeed, ramped ? &ramp : nullptr);
 		} else {
 			uint64_t ts = ahead > 0 ? nowNs + (uint64_t)(ahead * 1e9) : nowNs;
-			outputAudio(obsSource, q.frame, ts, normalSpeed ? 1.0 : speedNow);
+			outputAudio(obsSource, q.frame, ts, normalSpeed ? 1.0 : audioSpeed, ramped ? &ramp : nullptr,
+				    rampBuffer);
 		}
 		av_frame_free(&q.frame);
 	}
@@ -1208,6 +1550,9 @@ void ReplayPlayer::tick()
 		obs_source_media_started(obsSource);
 	if (ended)
 		obs_source_media_ended(obsSource);
+
+	retired.clear();
+	av_frame_free(&retiredFrame);
 }
 
 /* ------------------------------------------------------------------------- */

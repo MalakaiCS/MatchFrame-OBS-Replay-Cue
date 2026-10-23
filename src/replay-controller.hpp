@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "capture-engine.hpp"
 #include "clip-writer.hpp"
+#include "match.hpp"
 #include "replay-config.hpp"
 #include "replay-event.hpp"
 #include "replay-player.hpp"
@@ -63,6 +64,10 @@ public:
 	void applyConfig(const Config &updated);
 
 	const std::vector<ReplayEvent> &events() const { return eventList; }
+	/* the replays to list: the open match's, plus ones that belong to no
+	 * match (all of them without a match, or with "show all matches") */
+	std::vector<const ReplayEvent *> listedEvents() const;
+	bool listed(const ReplayEvent &event) const;
 	const ReplayEvent *findEvent(const std::string &id) const;
 	int indexOfEvent(const std::string &id) const;
 	std::string selectedEventId() const { return selectedId; }
@@ -83,6 +88,10 @@ public:
 
 	/* match and highlights */
 	const Sport &sport() const { return findSport(cfg.sport); }
+	bool matchOpen() const { return !cfg.matchId.empty(); }
+	const MatchInfo &openMatch() const { return match; }
+	std::vector<MatchInfo> matches() const; /* this sport's matches, newest first */
+	QString defaultMatchName() const;       /* "Match 3" */
 	int matchPhase() const { return cfg.matchPhase; }
 	int currentReel() const { return reelForPhase(sport(), cfg.matchPhase); }
 	bool inReel(const ReplayEvent &event, int reel) const;
@@ -143,11 +152,17 @@ public slots:
 
 	void setMatchPhase(int phase);
 	void nextMatchPhase();
-	void newMatch();
+	/* empty name and teams: "Match N" */
+	void newMatch(const QString &name = QString(), const QString &home = QString(),
+		      const QString &away = QString());
+	void editMatch(const QString &name, const QString &home, const QString &away);
+	void openMatch(const QString &id);
+	void setShowAllMatches(bool enabled);
 	void playHighlights(int reel = -1); /* -1: currentReel() */
 	/* angle -1: the selected angle; every replay that has it is exported from it */
 	void exportHighlights(int reel = -1, int angle = -1);
 	void setHighlightsLoop(bool enabled);
+	void setHighlightsFade(double seconds); /* 0: cut */
 	void setAutoHighlights(bool enabled);
 	void setHighlight(const QString &id, bool on);
 	void toggleHighlight(const QString &id);
@@ -175,7 +190,7 @@ private:
 	void onPlaybackEnded();
 	void createEvent(int64_t inUsec, int64_t outUsec, bool play);
 	void onClipWritten(ClipResult result);
-	void onScanFinished(std::vector<ReplayEvent> scanned);
+	void onScanFinished(std::vector<ReplayEvent> scanned, std::vector<MatchInfo> scannedMatches);
 	void updateWatcher();
 	void importReplayBufferSave();
 
@@ -190,6 +205,18 @@ private:
 	void startEvent(const ReplayEvent &event, int angle, bool autoplay, bool goLive);
 	void playReelFrom(const QStringList &ids, int index);
 	void matchUpdated();
+	void loadOpenMatch();
+	void createMatch(const std::string &name, const std::string &home, const std::string &away);
+	void matchSwitched();  /* another match is open: its replays, numbering and folder */
+	void listingChanged(); /* the replays to list changed */
+	std::string uniqueMatchFolder(const std::string &name, const std::string &current) const;
+	void movedFolder(const std::string &from, const std::string &to);
+	int highestNumber() const; /* of the open match's replays */
+	/* where new replays are written: the open match's folder, or the replay folder */
+	std::string replayFolder() const;
+	void prepareNextInReel();
+	void checkPreparedNext();
+	void onPlayerAdvanced(const PlayerStatus &status);
 	void scheduleAutoHighlights(int reel);
 	void cancelAutoHighlights();
 	void runAutoHighlights(int generation);
@@ -240,6 +267,12 @@ private:
 	int64_t pendingLiveDeadline = 0;
 	bool highlightSession = false;
 	int highlightReel = 0;
+	std::string preparedNextId; /* the reel's next replay, set up in the player to fade into */
+	uint64_t playerFades = 0;   /* PlayerStatus::fades last seen */
+
+	/* matches */
+	MatchInfo match;                  /* the open one (id empty: none) */
+	std::vector<MatchInfo> matchList; /* every match found in the replay folder */
 
 	/* automatic highlights at a break */
 	int autoReel = -1;      /* reel waiting to play, -1: none */

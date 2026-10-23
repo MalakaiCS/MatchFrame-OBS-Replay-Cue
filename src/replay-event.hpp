@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "match.hpp"
+
 #include <obs.h>
 
 #include <cstdint>
@@ -60,6 +62,7 @@ struct ReplayEvent {
 	bool highlight = false; /* in the highlights reels */
 	int period = 0;         /* match period it was saved in, 0 if none */
 	std::string match;      /* match it belongs to (Config::matchId) */
+	std::string folder;     /* folder it lives in: the replay folder or a match's (not saved) */
 	std::vector<AngleClip> angles;
 
 	/* Seconds from the start of angle i's file to the IN point. */
@@ -92,9 +95,11 @@ private:
  * Builds the event list for a replay folder: every sidecar file, plus loose
  * media files grouped into multi-angle events by camera folder or file name
  * ("Cam1/goal.mp4" + "Cam2/goal.mp4", or "goal_Cam1.mp4" + "goal_Cam2.mp4").
+ * Match folders inside it (with a match file) are read the same way, their
+ * loose files join that match, and the matches go to `matches`.
  */
 std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::vector<std::string> &angleLabels,
-					  ProbeCache &cache);
+					  ProbeCache &cache, std::vector<MatchInfo> *matches = nullptr);
 
 bool isMediaFile(const std::string &path);
 

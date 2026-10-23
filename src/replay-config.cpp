@@ -81,10 +81,13 @@ void Config::load()
 	tags.assign(findSport(sport).tags.begin(), findSport(sport).tags.end());
 	matchPhase = std::clamp(getInt(data, "match_phase", matchPhase), 0, phaseCount(findSport(sport)) - 1);
 	matchId = findSport(sport).periods ? getString(data, "match_id", matchId) : std::string();
+	matchFolder = matchId.empty() ? std::string() : getString(data, "match_folder", matchFolder);
+	showAllMatches = getBool(data, "show_all_matches", showAllMatches);
 	highlightNewReplays = getBool(data, "highlight_new_replays", highlightNewReplays);
 	highlightsScene = getString(data, "highlights_scene", highlightsScene);
 	highlightsSpeed = std::clamp(getDouble(data, "highlights_speed", highlightsSpeed), 0.05, 2.0);
 	loopHighlights = getBool(data, "loop_highlights", loopHighlights);
+	highlightsFadeMs = std::clamp(getInt(data, "highlights_fade_ms", highlightsFadeMs), 0, 3000);
 	autoHighlights = getBool(data, "auto_highlights", autoHighlights);
 	autoHighlightsDelay = std::clamp(getInt(data, "auto_highlights_delay", autoHighlightsDelay), 0, 120);
 
@@ -229,10 +232,13 @@ void Config::save() const
 	obs_data_set_string(data, "sport", sport.c_str());
 	obs_data_set_int(data, "match_phase", matchPhase);
 	obs_data_set_string(data, "match_id", matchId.c_str());
+	obs_data_set_string(data, "match_folder", matchFolder.c_str());
+	obs_data_set_bool(data, "show_all_matches", showAllMatches);
 	obs_data_set_bool(data, "highlight_new_replays", highlightNewReplays);
 	obs_data_set_string(data, "highlights_scene", highlightsScene.c_str());
 	obs_data_set_double(data, "highlights_speed", highlightsSpeed);
 	obs_data_set_bool(data, "loop_highlights", loopHighlights);
+	obs_data_set_int(data, "highlights_fade_ms", highlightsFadeMs);
 	obs_data_set_bool(data, "auto_highlights", autoHighlights);
 	obs_data_set_int(data, "auto_highlights_delay", autoHighlightsDelay);
 

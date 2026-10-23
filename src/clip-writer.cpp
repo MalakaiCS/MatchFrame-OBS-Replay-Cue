@@ -651,6 +651,7 @@ ClipResult ClipWriter::process(ClipJob &job)
 	event.highlight = job.highlight;
 	event.period = job.period;
 	event.match = job.match;
+	event.folder = job.folder;
 	event.number = job.number;
 	event.created = job.created;
 	event.outUsec = job.outUsec;

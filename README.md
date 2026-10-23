@@ -38,9 +38,13 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
 - **Sports and highlights:** pick your sport (football, rugby, AFL, netball,
   basketball and more) and every replay is stamped with the half, quarter or
   period it was saved in. At Half Time and Full Time a **Highlights** tab has the
-  reel ready to roll (or rolls it by itself), can loop it through the break, and
-  **exports the reel as one MP4** for social media.
-- **Control surfaces:** 34 OBS hotkeys and 45 obs-websocket requests for
+  reel ready to roll (or rolls it by itself), **fades each replay into the
+  next**, can loop it through the break, and **exports the reel as one MP4** for
+  social media.
+- **Matches:** name each match and its teams ("Match 1: Leeds vs York"). Its
+  replays and exported highlights get their own folder, and the replay list
+  shows that match's replays.
+- **Control surfaces:** 34 OBS hotkeys and 48 obs-websocket requests for
   Stream Deck, Bitfocus Companion, Touch Portal or your own scripts.
 
 ## Requirements
@@ -115,41 +119,63 @@ builds them as you go:
    | Basketball, American football | 4 quarters | End of Q1, Half Time, End of Q3, Full Time |
    | Ice hockey | 3 periods | 1st and 2nd Intermission, Full Time |
 
-2. **Run the match from the dock.** The match bar above the replay list shows
-   where the match is and moves it on: *Start 1st Half* → *Half Time* →
-   *Start 2nd Half* → *Full Time*. Every replay is stamped with the period it
+2. **Create the match.** **New match…** on the match bar asks for the match
+   name and the two teams (*Match 1*, *Leeds* vs *York*). The match gets its
+   own folder in the replay folder, `Match 1 - Leeds vs York`, and every
+   replay of the match and its exported highlights are saved there. The
+   Replays tab lists the open match's replays.
+
+   ![New match: the match name and the two teams](docs/images/match-dialog.png)
+
+3. **Run the match from the dock.** The match bar above the replay list shows
+   the match and where it is, and moves it on: *Start 1st Half* → *Half Time*
+   → *Start 2nd Half* → *Full Time*. Every replay is stamped with the period it
    was saved in. A replay saved during a break belongs to the period that just
    ended, so the late replay of a goal on the whistle still makes it in.
-3. **At the break, roll the reel.** Calling a break opens the **Highlights**
+4. **At the break, roll the reel.** Calling a break opens the **Highlights**
    tab on that break's reel. Half Time covers the first half, Full Time the
    whole match, and other breaks the period that just finished. Replays are
    in the reel unless you untick them; tick or untick any time (or press **H**
    on a replay in the list). **Play highlights** plays them oldest first,
    from the selected angle, at the highlights speed (100% by default), with
-   *Cycle angles* if it is on. ⏮/⏭ step through the reel. With **Loop** on,
-   the reel repeats until you press **Back to Live**, so it can fill the whole
-   break.
-4. **Or let it roll by itself.** Tick *Play the highlights automatically when
+   *Cycle angles* if it is on. Each replay **fades into the next** (picture
+   dissolve, the sound dips) instead of cutting; set the length, or *Cut*, in
+   Settings → Sport → *Fade between replays* (0.5 s by default). ⏮/⏭ step
+   through the reel. With **Loop** on, the reel repeats until you press
+   **Back to Live**, so it can fill the whole break.
+5. **Or let it roll by itself.** Tick *Play the highlights automatically when
    a break starts* in Settings → Sport. Calling the break puts its reel on air
    after the delay you choose (5 s by default). A replay already on air is
    never cut off: the reel follows straight on from it. **Back to Live**
    cancels a reel that has not started yet.
-5. **Post it.** **Export reel** saves the ticked replays as one MP4 in the
-   export folder (e.g. `…_Half-Time-highlights.mp4`), from the selected angle,
-   ready for social media. The clips are joined without re-encoding, so it
+6. **Post it.** **Export reel** saves the ticked replays as one MP4 in the
+   match's `Highlights` folder (`Match 1 - Leeds vs York - Full Time
+   highlights.mp4`), from the selected angle, ready for social media. The clips are joined without re-encoding, so it
    takes seconds and does not load the computer during the broadcast. A clip
    that cannot be joined to the others (a different camera size or codec, such
    as an imported file) is left out and named in the message.
-6. **Give highlights their own look (optional).** Set a *Highlights scene* in
+7. **Give highlights their own look (optional).** Set a *Highlights scene* in
    Settings → Sport and reels play there instead of on the Replay scene. Add a
    "HALF TIME HIGHLIGHTS" graphic to it. The scene is created with the player
    the first time a reel plays.
 
-**New match** (on the match bar, or its … menu) starts the next game with empty
-reels; earlier replays stay in the list. The … menu also jumps to any part of
-the match if you called a break by mistake, and a replay's right-click
-**Period** menu moves it to another period. Without a sport, the Highlights tab
-has a single *All highlights* reel.
+**New match…** (on the match bar at Full Time, or in its … menu) starts the
+next game in a new folder, with an empty replay list and empty reels. The …
+menu also has:
+
+- **Edit match…** to fix the name or the teams (the folder is renamed to
+  match, unless a replay is playing from it).
+- **Open match** to go back to an earlier match: its replays, its reels and
+  how far it got, for example to export its Full Time highlights later. New
+  replays then go into that match.
+- **Show replays from all matches** to list every match's replays at once.
+- The match phases, to jump to any part of the match if you called a break by
+  mistake.
+
+Pressing *Start 1st Half* without creating a match opens the next "Match N";
+name it afterwards with Edit match. A replay's right-click **Period** menu moves
+it to another period. Without a sport there are no matches, and the Highlights
+tab has a single *All highlights* reel.
 
 ## Operator controls
 
@@ -201,7 +227,7 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | Request | Data | What it does |
 |---|---|---|
 | `GetStatus` | – | Armed state, per-camera buffer, marks, playback state, options |
-| `GetEvents` | – | Replay list (id, name, tag, angles, duration, index) |
+| `GetEvents` | – | Replay list as the dock shows it: the open match's replays (id, name, tag, angles, duration, index) |
 | `Arm` / `Disarm` / `ToggleArm` | – | Start/stop the camera buffers |
 | `MarkIn` / `MarkOut` / `ClearMarks` | – | Mark a replay; OUT saves it |
 | `InstantReplay` | `seconds?`, `play?` | Save the last N seconds (and play it) |
@@ -217,29 +243,33 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | `SetSpeed` | `speed` (0.05–2.0) or `percent` | Slow motion |
 | `Seek` | `position` (s) | Jump within the replay |
 | `Step` | `frames` (±n) | Frame step |
-| `SetOptions` | `autoPlayNext?`, `cycleAngles?`, `returnToLive?`, `autoHighlights?` | Toggle behaviour |
+| `SetOptions` | `autoPlayNext?`, `cycleAngles?`, `returnToLive?`, `autoHighlights?`, `highlightsFade?` (seconds, 0 = cut), `showAllMatches?` | Toggle behaviour |
 | `RenameEvent` / `SetEventTag` / `ToggleFavorite` | `id`/`index`, `name`/`tag` | Edit a replay |
 | `DeleteEvent` | `id`/`index` | Move a replay's files to the Trash |
 | `ExportEvent` | `id`/`index`?, `angle?`, `trim?` (default true) | Export MP4s to the export folder |
 | `RefreshEvents` | – | Rescan the replay folder |
-| `GetMatch` | – | Sport, current phase, every phase, and each highlights reel (count, length, replay ids) |
+| `GetMatch` | – | The open match (title, name, teams, folder), sport, current phase, every phase, and each highlights reel (count, length, replay ids) |
 | `NextMatchPhase` | – | Move the match on (start a period, call a break or full time) |
 | `SetMatchPhase` | `phase` (0 = pre-match) | Jump to a phase (numbers from `GetMatch`) |
-| `NewMatch` | – | Start a new match with empty reels |
+| `NewMatch` | `name?`, `home?`, `away?` | Start a new match in its own folder ("Match N" if no name is given) |
+| `SetMatchInfo` | `name?`, `home?`, `away?` | Rename the open match or its teams (the ones given change) |
+| `GetMatches` | – | Every match in the replay folder (id, title, teams, folder, phase), newest first |
+| `OpenMatch` | `id` | Go back to an earlier match |
 | `PlayHighlights` | `reel?`, `loop?` | Play a highlights reel (default: the current break's) |
-| `ExportHighlights` | `reel?`, `angle?` | Save a highlights reel as one MP4 in the export folder |
+| `ExportHighlights` | `reel?`, `angle?` | Save a highlights reel as one MP4 in the match's `Highlights` folder |
 | `SetHighlight` | `id`/`index`?, `highlight?` | Put a replay in or out of the highlights (toggles if `highlight` is omitted) |
 | `SetEventPeriod` | `id`/`index`, `period` | Move a replay to another period |
-| `SaveUiSnapshot` | `folder` | Save PNGs of the dock and settings (for docs) |
+| `SaveUiSnapshot` | `folder` | Save PNGs of the dock, the New match dialog and settings (for docs) |
 
 Reels are named by the phase number of their break (`reel: 2` is Half Time in
 football; `GetMatch` lists them). Replays in `GetEvents` carry `highlight`,
 `period` and `match`.
 
 Vendor events (subscribe to `Vendors`): `ReplayCreated`, `PlaybackStarted`,
-`PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`, `MatchPhaseChanged`,
-`HighlightsStarted`, `HighlightsExported` (with the file path, so a script can
-upload it).
+`PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`, `MatchChanged` (a match
+was created, opened or renamed), `MatchPhaseChanged`, `HighlightsStarted`,
+`HighlightsExported` (with the file path, so a script can upload it). In a
+highlights reel each replay sends `PlaybackStarted` as it fades in.
 
 `tools/replaycue_ws.py` is a dependency-free command-line client:
 
@@ -258,22 +288,32 @@ so `TriggerMediaInputAction` and the source's play/pause/next buttons work too
 ## The replay folder
 
 Each replay Replay Cue records is saved as one MP4 per angle plus a small
-sidecar file:
+sidecar file, in the folder of the match it belongs to:
 
 ```
 Replays/
-  2026-10-22_20-00-40_R002_Cam-1.mp4
-  2026-10-22_20-00-40_R002_Cam-2.mp4
-  2026-10-22_20-00-40_R002_Cam-3.mp4
-  2026-10-22_20-00-40_R002.rcue.json   ← name, tag, period, highlight, IN/OUT, per-angle capture time
+  Match 1 - Leeds vs York/
+    match.rcmatch.json                   ← match name, teams, sport, how far it got
+    2026-10-22_20-00-40_R002_Cam-1.mp4
+    2026-10-22_20-00-40_R002_Cam-2.mp4
+    2026-10-22_20-00-40_R002_Cam-3.mp4
+    2026-10-22_20-00-40_R002.rcue.json   ← name, tag, period, highlight, IN/OUT, per-angle capture time
+    Highlights/
+      Match 1 - Leeds vs York - Half Time highlights.mp4
+      Match 1 - Leeds vs York - Full Time highlights.mp4
+  Match 2 - Hull vs Bath/
+    …
 ```
+
+Without a sport (or a match), replays are saved in the replay folder itself.
 
 The sidecar stores where IN falls in each file, which is what keeps angles
 frame-synced. File paths are relative, so the folder can be copied to another
 machine.
 
-Other clips in the folder (or in camera sub-folders) are picked up as
-**imported** replays and grouped by camera:
+Other clips in the folder, in a match's folder (they join that match) or in
+camera sub-folders of either are picked up as **imported** replays and grouped
+by camera:
 
 - sub-folders named after a camera: `Cam1/goal.mp4`, `Cam2/goal.mp4`
 - or a camera token in the file name: `goal_Cam1.mp4`, `goal-cam2.mov`,
@@ -301,10 +341,11 @@ for it.
 
 - Exports start on the keyframe at or before IN (at most one keyframe
   interval early); they are stream copies, not re-encodes. An exported reel
-  uses one angle for every replay, and only clips with the same size and codec
-  can be joined.
+  uses one angle for every replay, cuts from one replay to the next (the fades
+  are on air only), and only clips with the same size and codec can be joined.
 - HDR is recorded only with a 10-bit HEVC or AV1 encoder; an H.264 encoder on
   an HDR canvas records SDR (Rec. 709).
+- A highlights reel cuts, rather than fades, between an HDR and an SDR replay.
 - Playing many angles decodes all of them at once so switching is instant;
   hardware decoding is on by default.
 - Hotkeys are global to the plugin, not per replay. Use `PlayEvent` with an

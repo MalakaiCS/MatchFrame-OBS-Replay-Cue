@@ -237,6 +237,14 @@ bool sameCapture(const Config &a, const Config &b)
 	       a.captureHdr == b.captureHdr;
 }
 
+int listedIndex(const std::vector<const ReplayEvent *> &shown, const std::string &id)
+{
+	for (size_t i = 0; i < shown.size(); i++)
+		if (shown[i]->id == id)
+			return (int)i;
+	return -1;
+}
+
 std::string uniquePath(const std::string &dir, const std::string &stem, const std::string &ext)
 {
 	std::string path = joinPath(dir, stem + ext);
@@ -252,6 +260,7 @@ std::string uniquePath(const std::string &dir, const std::string &stem, const st
 ReplayController::ReplayController(QObject *parent) : QObject(parent)
 {
 	cfg.load();
+	loadOpenMatch();
 	speedValue = cfg.defaultSpeed;
 
 	std::string details;
@@ -378,9 +387,12 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 			   !replaySceneIsLive()) {
 			/* the operator cut away from the replay by hand */
 			PlayerRef ref = acquirePlayer(false);
-			if (ref.player)
+			if (ref.player) {
 				ref.player->pause();
+				ref.player->clearNext();
+			}
 			playingId.clear();
+			preparedNextId.clear();
 			queue.clear();
 			highlightSession = false;
 			emit playbackUpdated();
@@ -399,6 +411,7 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 			disarm();
 		}
 		playingId.clear();
+		preparedNextId.clear();
 		queue.clear();
 		highlightSession = false;
 		playerWeak = nullptr;
@@ -508,13 +521,25 @@ void ReplayController::applyConfig(const Config &updated)
 	const bool sportChanged = cfg.sport != updated.sport;
 
 	/* the match moves on while the settings dialog is open; a new sport
-	 * starts a new match */
-	const int phase = cfg.matchPhase;
-	const std::string match = cfg.matchId;
+	 * closes the match */
+	const Config previous = cfg;
 	cfg = updated;
-	cfg.matchPhase = sportChanged ? 0 : phase;
-	cfg.matchId = sportChanged ? std::string() : match;
+	cfg.matchPhase = sportChanged ? 0 : previous.matchPhase;
+	cfg.matchId = sportChanged ? std::string() : previous.matchId;
+	cfg.matchFolder = sportChanged ? std::string() : previous.matchFolder;
+	cfg.showAllMatches = previous.showAllMatches;
 	cfg.save();
+
+	if (sportChanged) {
+		match = MatchInfo();
+		matchSwitched();
+	} else if (cfg.folder != previous.folder && !match.folder.empty()) {
+		/* the open match carries on in a folder of the same name there */
+		match.folder = joinPath(cfg.folder, cfg.matchFolder);
+		std::string error;
+		if (!QDir().mkpath(qstr(match.folder)) || !saveMatchFile(match, error))
+			say(QString(text("Msg.MatchFolderFailed")).arg(qstr(match.folder)), true);
+	}
 
 	if (captureChanged && engine.armed())
 		arm();
@@ -635,7 +660,7 @@ void ReplayController::createEvent(int64_t inUsec, int64_t outUsec, bool play)
 	job.highlight = cfg.highlightNewReplays;
 	job.period = sport().periods ? periodOfPhase(cfg.matchPhase) : 0;
 	job.match = cfg.matchId;
-	job.folder = cfg.folder;
+	job.folder = replayFolder();
 	job.created = wallClockSeconds() - (nowUsec() - outUsec) / 1000000;
 	char suffix[16];
 	snprintf(suffix, sizeof(suffix), "_R%03d", job.number);
@@ -743,13 +768,16 @@ void ReplayController::refreshEvents()
 	const std::string folder = cfg.folder;
 	const std::vector<std::string> labels = cfg.angleLabels();
 	scanThread = std::thread([this, folder, labels]() {
-		std::vector<ReplayEvent> scanned = scanReplayFolder(folder, labels, probeCache);
+		std::vector<MatchInfo> matches;
+		std::vector<ReplayEvent> scanned = scanReplayFolder(folder, labels, probeCache, &matches);
 		QMetaObject::invokeMethod(
-			this, [this, scanned]() mutable { onScanFinished(std::move(scanned)); }, Qt::QueuedConnection);
+			this,
+			[this, scanned, matches]() mutable { onScanFinished(std::move(scanned), std::move(matches)); },
+			Qt::QueuedConnection);
 	});
 }
 
-void ReplayController::onScanFinished(std::vector<ReplayEvent> scanned)
+void ReplayController::onScanFinished(std::vector<ReplayEvent> scanned, std::vector<MatchInfo> scannedMatches)
 {
 	scanning = false;
 	if (scanThread.joinable())
@@ -771,18 +799,36 @@ void ReplayController::onScanFinished(std::vector<ReplayEvent> scanned)
 			 [](const ReplayEvent &a, const ReplayEvent &b) { return a.created < b.created; });
 
 	eventList = std::move(scanned);
-	int highest = 0;
-	for (const ReplayEvent &e : eventList)
-		highest = std::max(highest, e.number);
-	nextNumber = std::max(nextNumber, highest + 1);
+	nextNumber = std::max(nextNumber, highestNumber() + 1);
 
-	if (!findEvent(selectedId))
-		selectedId = eventList.empty() ? std::string() : eventList.back().id;
+	/* matches with a folder, then older ones known only from their replays */
+	matchList = std::move(scannedMatches);
+	auto known = [this](const std::string &id) {
+		return std::any_of(matchList.begin(), matchList.end(), [&](const MatchInfo &m) { return m.id == id; });
+	};
+	if (!cfg.matchId.empty() && !known(cfg.matchId))
+		matchList.push_back(match);
+	for (const ReplayEvent &e : eventList) {
+		if (e.match.empty() || known(e.match))
+			continue;
+		MatchInfo old;
+		old.id = e.match;
+		old.phase = phaseCount(sport()) - 1;
+		old.created = e.created;
+		matchList.push_back(old);
+	}
+
+	const ReplayEvent *selected = findEvent(selectedId);
+	if (!selected || !listed(*selected)) {
+		const auto shown = listedEvents();
+		selectedId = shown.empty() ? std::string() : shown.back()->id;
+	}
 
 	rebuildEventsSnapshot();
 	emit eventsChanged();
 	emit selectionChanged(qstr(selectedId));
 	updateWatcher();
+	checkPreparedNext();
 
 	if (rescanQueued) {
 		rescanQueued = false;
@@ -821,21 +867,24 @@ void ReplayController::selectEvent(const QString &id)
 
 void ReplayController::selectRelative(int delta)
 {
-	if (eventList.empty())
+	const auto shown = listedEvents();
+	if (shown.empty())
 		return;
-	int idx = indexOfEvent(selectedId);
+	int idx = listedIndex(shown, selectedId);
 	if (idx < 0)
-		idx = delta > 0 ? -1 : (int)eventList.size();
-	idx = std::clamp(idx + delta, 0, (int)eventList.size() - 1);
-	selectEvent(qstr(eventList[(size_t)idx].id));
+		idx = delta > 0 ? -1 : (int)shown.size();
+	idx = std::clamp(idx + delta, 0, (int)shown.size() - 1);
+	selectEvent(qstr(shown[(size_t)idx]->id));
 }
 
 bool ReplayController::persist(ReplayEvent &event)
 {
 	if (event.sidecar.empty()) {
-		/* imported clips get a sidecar the first time they are edited */
-		QDir().mkpath(qstr(cfg.folder));
-		event.sidecar = uniquePath(cfg.folder, "import_" + sanitizeFileName(event.name), kSidecarExtension);
+		/* imported clips get a sidecar the first time they are edited, in
+		 * the folder they were found in */
+		const std::string dir = event.folder.empty() ? cfg.folder : event.folder;
+		QDir().mkpath(qstr(dir));
+		event.sidecar = uniquePath(dir, "import_" + sanitizeFileName(event.name), kSidecarExtension);
 	}
 	std::string error;
 	if (!saveSidecar(event, error)) {
@@ -903,6 +952,15 @@ void ReplayController::matchUpdated()
 {
 	const Sport &s = sport();
 	cfg.save();
+	if (!match.folder.empty()) {
+		match.phase = cfg.matchPhase;
+		std::string error;
+		if (!saveMatchFile(match, error))
+			obs_log(LOG_WARNING, "%s", error.c_str());
+	}
+	for (MatchInfo &m : matchList)
+		if (m.id == match.id)
+			m = match;
 	rebuildMatchSnapshot();
 	emit matchChanged();
 
@@ -913,7 +971,132 @@ void ReplayController::matchUpdated()
 	obs_data_set_bool(data, "break", isBreakPhase(s, cfg.matchPhase));
 	obs_data_set_int(data, "reel", currentReel());
 	obs_data_set_string(data, "match_id", cfg.matchId.c_str());
+	obs_data_set_string(data, "match_title", cfg.matchId.empty() ? "" : matchTitle(match).c_str());
 	emitVendor("MatchPhaseChanged", data);
+}
+
+void ReplayController::loadOpenMatch()
+{
+	match = MatchInfo();
+	if (cfg.matchId.empty())
+		return;
+	MatchInfo saved;
+	if (!cfg.matchFolder.empty() && loadMatchFile(joinPath(cfg.folder, cfg.matchFolder), saved) &&
+	    saved.id == cfg.matchId) {
+		match = saved;
+		return;
+	}
+	/* a match from before matches had folders (or its folder is gone):
+	 * its replays are kept in the replay folder */
+	match.id = cfg.matchId;
+	match.sport = cfg.sport;
+	cfg.matchFolder.clear();
+}
+
+std::string ReplayController::replayFolder() const
+{
+	return match.folder.empty() ? cfg.folder : match.folder;
+}
+
+int ReplayController::highestNumber() const
+{
+	int highest = 0;
+	for (const ReplayEvent &e : eventList)
+		if (e.match == cfg.matchId)
+			highest = std::max(highest, e.number);
+	return highest;
+}
+
+std::vector<MatchInfo> ReplayController::matches() const
+{
+	std::vector<MatchInfo> list;
+	for (const MatchInfo &m : matchList)
+		if (m.sport.empty() || m.sport == cfg.sport)
+			list.push_back(m);
+	std::stable_sort(list.begin(), list.end(),
+			 [](const MatchInfo &a, const MatchInfo &b) { return a.created > b.created; });
+	return list;
+}
+
+QString ReplayController::defaultMatchName() const
+{
+	int named = 0;
+	for (const MatchInfo &m : matchList)
+		named += m.folder.empty() ? 0 : 1;
+	return QString(text("Match.DefaultName")).arg(named + 1);
+}
+
+bool ReplayController::listed(const ReplayEvent &event) const
+{
+	if (sport().periods == 0 || cfg.matchId.empty() || cfg.showAllMatches)
+		return true;
+	return event.match.empty() || event.match == cfg.matchId;
+}
+
+std::vector<const ReplayEvent *> ReplayController::listedEvents() const
+{
+	std::vector<const ReplayEvent *> shown;
+	for (const ReplayEvent &e : eventList)
+		if (listed(e))
+			shown.push_back(&e);
+	return shown;
+}
+
+std::string ReplayController::uniqueMatchFolder(const std::string &name, const std::string &current) const
+{
+	std::string path = joinPath(cfg.folder, name);
+	for (int n = 2; QFileInfo::exists(qstr(path)); n++) {
+		/* the same folder, maybe in other letter case */
+		if (!current.empty() &&
+		    QFileInfo(qstr(path)).canonicalFilePath() == QFileInfo(qstr(current)).canonicalFilePath())
+			break;
+		path = joinPath(cfg.folder, name + " (" + std::to_string(n) + ")");
+	}
+	return path;
+}
+
+void ReplayController::createMatch(const std::string &name, const std::string &home, const std::string &away)
+{
+	MatchInfo created;
+	created.created = wallClockSeconds();
+	created.id = formatFileStamp(created.created);
+	for (int n = 2;
+	     std::any_of(matchList.begin(), matchList.end(), [&](const MatchInfo &m) { return m.id == created.id; });
+	     n++)
+		created.id = formatFileStamp(created.created) + "_" + std::to_string(n);
+	created.name = name.empty() && home.empty() && away.empty() ? defaultMatchName().toStdString() : name;
+	created.home = home;
+	created.away = away;
+	created.sport = cfg.sport;
+	created.folder = uniqueMatchFolder(matchFolderName(created), std::string());
+
+	std::string error;
+	if (!QDir().mkpath(qstr(created.folder)) || !saveMatchFile(created, error)) {
+		say(QString(text("Msg.MatchFolderFailed")).arg(qstr(created.folder)), true);
+		created.folder.clear();
+	}
+	match = created;
+	matchList.push_back(created);
+	cfg.matchId = created.id;
+	cfg.matchFolder = created.folder.empty() ? std::string() : fileNameOf(created.folder);
+	cfg.matchPhase = 0;
+	matchSwitched();
+}
+
+void ReplayController::matchSwitched()
+{
+	nextNumber = highestNumber() + 1;
+	listingChanged();
+	updateWatcher();
+
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_string(data, "id", match.id.c_str());
+	obs_data_set_string(data, "title", match.id.empty() ? "" : matchTitle(match).c_str());
+	obs_data_set_string(data, "name", match.name.c_str());
+	obs_data_set_string(data, "home", match.home.c_str());
+	obs_data_set_string(data, "away", match.away.c_str());
+	obs_data_set_string(data, "folder", match.folder.c_str());
+	emitVendor("MatchChanged", data);
 }
 
 void ReplayController::setMatchPhase(int phase)
@@ -923,9 +1106,12 @@ void ReplayController::setMatchPhase(int phase)
 	if (phase == cfg.matchPhase)
 		return;
 	const int previous = cfg.matchPhase;
+	if (phase > 0 && cfg.matchId.empty()) {
+		/* kick-off without New match: the match gets the next free name */
+		createMatch(std::string(), std::string(), std::string());
+		say(QString(text("Msg.MatchCreated")).arg(qstr(matchTitle(match)), qstr(replayFolder())));
+	}
 	cfg.matchPhase = phase;
-	if (phase > 0 && cfg.matchId.empty())
-		cfg.matchId = formatFileStamp(wallClockSeconds());
 
 	const QString name = qstr(phaseName(s, phase));
 	if (isBreakPhase(s, phase))
@@ -956,13 +1142,120 @@ void ReplayController::nextMatchPhase()
 	setMatchPhase(cfg.matchPhase + 1);
 }
 
-void ReplayController::newMatch()
+void ReplayController::newMatch(const QString &name, const QString &home, const QString &away)
 {
-	cfg.matchPhase = 0;
-	cfg.matchId.clear();
+	if (sport().periods == 0) {
+		say(text("Msg.NoSport"), true);
+		return;
+	}
 	cancelAutoHighlights();
-	say(text("Msg.NewMatch"));
+	createMatch(name.trimmed().toStdString(), home.trimmed().toStdString(), away.trimmed().toStdString());
+	say(QString(text("Msg.MatchCreated")).arg(qstr(matchTitle(match)), qstr(replayFolder())));
 	matchUpdated();
+}
+
+void ReplayController::editMatch(const QString &name, const QString &home, const QString &away)
+{
+	if (cfg.matchId.empty()) {
+		say(text("Msg.NoMatch"), true);
+		return;
+	}
+	MatchInfo edited = match;
+	edited.name = name.trimmed().toStdString();
+	edited.home = home.trimmed().toStdString();
+	edited.away = away.trimmed().toStdString();
+	if (edited.name.empty() && edited.home.empty() && edited.away.empty())
+		edited.name = match.name;
+
+	/* the folder follows the name, unless a replay is being written to or
+	 * played from it */
+	const std::string wanted = matchFolderName(edited);
+	bool moved = false;
+	if (edited.folder.empty()) {
+		edited.folder = uniqueMatchFolder(wanted, std::string());
+		if (!QDir().mkpath(qstr(edited.folder)))
+			edited.folder.clear();
+	} else if (fileNameOf(edited.folder) != wanted && pendingClips == 0 && playingId.empty()) {
+		/* "Match 1 (2)" stays as it is while "Match 1" is taken */
+		const std::string target = uniqueMatchFolder(wanted, edited.folder);
+		if (target != edited.folder) {
+			if (QDir().rename(qstr(edited.folder), qstr(target))) {
+				movedFolder(edited.folder, target);
+				edited.folder = target;
+				moved = true;
+			} else {
+				obs_log(LOG_WARNING, "could not rename %s to %s", edited.folder.c_str(),
+					target.c_str());
+			}
+		}
+	}
+
+	match = edited;
+	cfg.matchFolder = match.folder.empty() ? std::string() : fileNameOf(match.folder);
+	if (std::none_of(matchList.begin(), matchList.end(), [&](const MatchInfo &m) { return m.id == match.id; }))
+		matchList.push_back(match);
+	say(QString(text("Msg.MatchRenamed")).arg(qstr(matchTitle(match))));
+	matchUpdated();
+	matchSwitched();
+	if (moved)
+		refreshEvents();
+}
+
+void ReplayController::movedFolder(const std::string &from, const std::string &to)
+{
+	auto rebase = [&](std::string &path) {
+		if (path.size() > from.size() && path.compare(0, from.size(), from) == 0 &&
+		    (path[from.size()] == '/' || path[from.size()] == '\\'))
+			path = to + path.substr(from.size());
+		else if (path == from)
+			path = to;
+	};
+	for (ReplayEvent &e : eventList) {
+		rebase(e.folder);
+		rebase(e.sidecar);
+		for (AngleClip &clip : e.angles)
+			rebase(clip.file);
+	}
+}
+
+void ReplayController::openMatch(const QString &id)
+{
+	const std::string wanted = id.toStdString();
+	if (wanted == cfg.matchId)
+		return;
+	auto it = std::find_if(matchList.begin(), matchList.end(), [&](const MatchInfo &m) { return m.id == wanted; });
+	if (it == matchList.end() || sport().periods == 0) {
+		say(text("Msg.NoMatch"), true);
+		return;
+	}
+	cancelAutoHighlights();
+	match = *it;
+	cfg.matchId = match.id;
+	cfg.matchFolder = match.folder.empty() ? std::string() : fileNameOf(match.folder);
+	cfg.matchPhase = std::clamp(match.phase, 0, phaseCount(sport()) - 1);
+	matchSwitched();
+	say(QString(text("Msg.MatchOpened")).arg(qstr(matchTitle(match))));
+	matchUpdated();
+}
+
+void ReplayController::setShowAllMatches(bool enabled)
+{
+	cfg.showAllMatches = enabled;
+	cfg.save();
+	listingChanged();
+	emit statusChanged();
+}
+
+void ReplayController::listingChanged()
+{
+	const ReplayEvent *selected = findEvent(selectedId);
+	if (!selected || !listed(*selected)) {
+		const auto shown = listedEvents();
+		selectedId = shown.empty() ? std::string() : shown.back()->id;
+		emit selectionChanged(qstr(selectedId));
+	}
+	rebuildEventsSnapshot();
+	emit eventsChanged();
 }
 
 void ReplayController::playHighlights(int reel)
@@ -998,6 +1291,81 @@ void ReplayController::playHighlights(int reel)
 	emitVendor("HighlightsStarted", data);
 }
 
+void ReplayController::prepareNextInReel()
+{
+	PlayerRef ref = acquirePlayer(false);
+	if (!ref.player)
+		return;
+	const ReplayEvent *current = findEvent(playingId);
+	const ReplayEvent *next = nullptr;
+	for (const QString &id : queue) {
+		next = findEvent(id.toStdString());
+		if (next && next->highlight && inReel(*next, highlightReel))
+			break;
+		next = nullptr;
+	}
+	if (!next && cfg.loopHighlights) {
+		const QStringList ids = reelIds(highlightReel);
+		next = ids.isEmpty() ? nullptr : findEvent(ids.front().toStdString());
+	}
+	/* cycling angles shows this replay again from the next camera first */
+	const bool cycling = cfg.cycleAngles && current && current->angles.size() > 1;
+	if (!highlightSession || cfg.highlightsFadeMs <= 0 || !current || !next || cycling) {
+		preparedNextId.clear();
+		ref.player->clearNext();
+		return;
+	}
+	preparedNextId = next->id;
+	ref.player->setNext(buildRequest(*next, angleIndex, true), cfg.highlightsFadeMs / 1000.0);
+}
+
+void ReplayController::checkPreparedNext()
+{
+	/* the reel's next replay was deleted, ticked out or moved to another period */
+	if (!highlightsPlaying() || preparedNextId.empty())
+		return;
+	const ReplayEvent *next = findEvent(preparedNextId);
+	if (!next || !next->highlight || !inReel(*next, highlightReel))
+		prepareNextInReel();
+}
+
+void ReplayController::onPlayerAdvanced(const PlayerStatus &status)
+{
+	/* the player faded into the next replay of the reel by itself */
+	OBSDataAutoRelease ended = obs_data_create();
+	obs_data_set_string(ended, "id", playingId.c_str());
+	emitVendor("PlaybackEnded", ended);
+
+	const std::string next = preparedNextId;
+	preparedNextId.clear();
+	if (!queue.isEmpty() && queue.front().toStdString() == next) {
+		queue.removeFirst();
+	} else {
+		/* the reel started over (loop), with any replays added since */
+		const QStringList ids = reelIds(highlightReel);
+		queue = ids.mid(ids.indexOf(qstr(next)) + 1);
+	}
+	playingId = next;
+	angleIndex = status.angle;
+	cycleShown = 1;
+	cycleStart = status.angle;
+	cued = false;
+	if (selectedId != next) {
+		selectedId = next;
+		emit selectionChanged(qstr(selectedId));
+	}
+
+	if (const ReplayEvent *event = findEvent(next)) {
+		OBSDataAutoRelease data = eventToData(*event);
+		obs_data_set_int(data, "angle", status.angle + 1);
+		obs_data_set_bool(data, "cued", false);
+		obs_data_set_bool(data, "highlights", true);
+		emitVendor("PlaybackStarted", data);
+	}
+	prepareNextInReel();
+	emit playbackUpdated();
+}
+
 void ReplayController::playReelFrom(const QStringList &ids, int index)
 {
 	if (index < 0 || index >= ids.size())
@@ -1013,7 +1381,19 @@ void ReplayController::setHighlightsLoop(bool enabled)
 {
 	cfg.loopHighlights = enabled;
 	cfg.save();
+	if (highlightsPlaying())
+		prepareNextInReel(); /* the last replay now leads back to the first */
 	rebuildMatchSnapshot();
+	emit statusChanged();
+}
+
+void ReplayController::setHighlightsFade(double seconds)
+{
+	cfg.highlightsFadeMs = (int)std::lround(std::clamp(seconds, 0.0, 3.0) * 1000.0);
+	cfg.save();
+	rebuildMatchSnapshot();
+	if (highlightsPlaying())
+		prepareNextInReel();
 	emit statusChanged();
 }
 
@@ -1096,10 +1476,18 @@ void ReplayController::exportHighlights(int reel, int angle)
 
 	const QString title = s.periods && reel > 0 ? QString(text("Export.ReelName")).arg(qstr(phaseName(s, reel)))
 						    : QString(text("Export.AllName"));
-	const std::string stamp = cfg.matchId.empty() ? formatFileStamp(wallClockSeconds()) : cfg.matchId;
-	const std::string folder = cfg.exportFolder.empty() ? joinPath(cfg.folder, "Exports") : cfg.exportFolder;
 	/* the writer numbers it (_2, _3...) if the name is taken when it writes */
-	const std::string output = joinPath(folder, stamp + "_" + sanitizeFileName(title.toStdString()) + ".mp4");
+	std::string output;
+	if (!match.folder.empty()) {
+		/* "Match 1 - Leeds vs York/Highlights/Match 1 - Leeds vs York - Half Time highlights.mp4" */
+		output = joinPath(joinPath(match.folder, kHighlightsFolder),
+				  safeName(matchFolderName(match) + " - " + title.toStdString()) + ".mp4");
+	} else {
+		const std::string stamp = cfg.matchId.empty() ? formatFileStamp(wallClockSeconds()) : cfg.matchId;
+		const std::string folder = cfg.exportFolder.empty() ? joinPath(cfg.folder, "Exports")
+								    : cfg.exportFolder;
+		output = joinPath(folder, stamp + "_" + sanitizeFileName(title.toStdString()) + ".mp4");
+	}
 
 	say(QString(text("Msg.ExportingReel")).arg(name).arg(segments.size()));
 	writer->enqueueReel(std::move(segments), output, [this, name, replays](ReelResult result) {
@@ -1164,6 +1552,7 @@ void ReplayController::setHighlight(const QString &id, bool on)
 	persist(*event);
 	rebuildEventsSnapshot();
 	emit eventsChanged();
+	checkPreparedNext();
 }
 
 void ReplayController::toggleHighlight(const QString &id)
@@ -1187,6 +1576,7 @@ void ReplayController::setEventPeriod(const QString &id, int period)
 	persist(*event);
 	rebuildEventsSnapshot();
 	emit eventsChanged();
+	checkPreparedNext();
 }
 
 void ReplayController::deleteEvents(const QStringList &ids)
@@ -1217,11 +1607,14 @@ void ReplayController::deleteEvents(const QStringList &ids)
 	}
 	if (!removed)
 		return;
-	if (!findEvent(selectedId))
-		selectedId = eventList.empty() ? std::string() : eventList.back().id;
+	if (!findEvent(selectedId)) {
+		const auto shown = listedEvents();
+		selectedId = shown.empty() ? std::string() : shown.back()->id;
+	}
 	rebuildEventsSnapshot();
 	emit eventsChanged();
 	emit selectionChanged(qstr(selectedId));
+	checkPreparedNext();
 	say(QString(text("Msg.Deleted")).arg(removed));
 }
 
@@ -1280,7 +1673,10 @@ void ReplayController::importReplayBufferSave()
 	clip.duration = probeDuration(path);
 	event.duration = clip.duration;
 	event.angles.push_back(clip);
-	event.sidecar = uniquePath(cfg.folder, "obs_" + sanitizeFileName(event.name), kSidecarExtension);
+	event.match = cfg.matchId;
+	event.period = sport().periods ? periodOfPhase(cfg.matchPhase) : 0;
+	event.folder = replayFolder();
+	event.sidecar = uniquePath(event.folder, "obs_" + sanitizeFileName(event.name), kSidecarExtension);
 	if (!persist(event))
 		return;
 
@@ -1459,6 +1855,9 @@ void ReplayController::startEvent(const ReplayEvent &event, int angle, bool auto
 	cycleShown = 1;
 	cycleStart = request.angle;
 	cued = !autoplay;
+	preparedNextId.clear();
+	if (highlightSession)
+		prepareNextInReel();
 
 	if (selectedId != event.id) {
 		selectedId = event.id;
@@ -1545,10 +1944,11 @@ void ReplayController::cueEvent(const QString &id)
 
 void ReplayController::cueSelected()
 {
+	const auto shown = listedEvents();
 	if (!selectedId.empty())
 		cueEvent(qstr(selectedId));
-	else if (!eventList.empty())
-		cueEvent(qstr(eventList.back().id));
+	else if (!shown.empty())
+		cueEvent(qstr(shown.back()->id));
 }
 
 void ReplayController::playEvent(const QString &id, int angle)
@@ -1577,11 +1977,12 @@ void ReplayController::playSelected()
 
 void ReplayController::playLatest()
 {
-	if (eventList.empty()) {
+	const auto shown = listedEvents();
+	if (shown.empty()) {
 		say(text("Msg.NoReplay"), true);
 		return;
 	}
-	playEvent(qstr(eventList.back().id));
+	playEvent(qstr(shown.back()->id));
 }
 
 void ReplayController::playNextEvent()
@@ -1594,9 +1995,10 @@ void ReplayController::playNextEvent()
 			playReelFrom(ids, idx + 1);
 		return;
 	}
-	int idx = indexOfEvent(playingId.empty() ? selectedId : playingId);
-	if (idx + 1 < (int)eventList.size())
-		playEvent(qstr(eventList[(size_t)idx + 1].id));
+	const auto shown = listedEvents();
+	int idx = listedIndex(shown, playingId.empty() ? selectedId : playingId);
+	if (idx + 1 < (int)shown.size())
+		playEvent(qstr(shown[(size_t)idx + 1]->id));
 }
 
 void ReplayController::playPreviousEvent()
@@ -1607,10 +2009,11 @@ void ReplayController::playPreviousEvent()
 		playReelFrom(ids, std::max(0, idx - 1));
 		return;
 	}
-	int idx = indexOfEvent(playingId.empty() ? selectedId : playingId);
+	const auto shown = listedEvents();
+	int idx = listedIndex(shown, playingId.empty() ? selectedId : playingId);
 	if (idx > 0)
-		playEvent(qstr(eventList[(size_t)idx - 1].id));
-	else if (idx < 0 && !eventList.empty())
+		playEvent(qstr(shown[(size_t)idx - 1]->id));
+	else if (idx < 0 && !shown.empty())
 		playLatest();
 }
 
@@ -1672,6 +2075,7 @@ void ReplayController::returnToLive(bool byOperator)
 	queue.clear();
 	cued = false;
 	pendingLiveScene = nullptr;
+	preparedNextId.clear();
 
 	PlayerRef ref = acquirePlayer(false);
 	OBSSourceAutoRelease scene = obs_get_source_by_name(sessionSceneName().c_str());
@@ -1824,9 +2228,10 @@ void ReplayController::onPlaybackEnded()
 			return;
 		}
 	} else if (cfg.autoPlayNext) {
-		int idx = indexOfEvent(playingId);
-		if (idx >= 0 && idx + 1 < (int)eventList.size()) {
-			startEvent(eventList[(size_t)idx + 1], angleIndex, true, true);
+		const auto shown = listedEvents();
+		int idx = listedIndex(shown, playingId);
+		if (idx >= 0 && idx + 1 < (int)shown.size()) {
+			startEvent(*shown[(size_t)idx + 1], angleIndex, true, true);
 			return;
 		}
 	}
@@ -1863,7 +2268,16 @@ void ReplayController::poll()
 	if (status.state == PlayerState::Error && previous != PlayerState::Error && !status.error.empty())
 		say(QString(text("Msg.PlaybackFailed")).arg(qstr(status.error)), true);
 
-	if (status.state == PlayerState::Ended && previous != PlayerState::Ended && !playingId.empty() &&
+	/* the player faded into the reel's next replay (it can be the same
+	 * one again, in a looping reel of one) */
+	bool advanced = false;
+	if (status.fades != playerFades) {
+		playerFades = status.fades;
+		advanced = !preparedNextId.empty() && !playingId.empty() && status.eventId == preparedNextId;
+		if (advanced)
+			onPlayerAdvanced(status);
+	}
+	if (!advanced && status.state == PlayerState::Ended && previous != PlayerState::Ended && !playingId.empty() &&
 	    status.eventId == playingId)
 		onPlaybackEnded();
 
@@ -1913,12 +2327,16 @@ void ReplayController::poll()
 	obs_data_set_bool(options, "return_to_live", cfg.returnToLive);
 	obs_data_set_bool(options, "loop_highlights", cfg.loopHighlights);
 	obs_data_set_bool(options, "auto_highlights", cfg.autoHighlights);
+	obs_data_set_double(options, "highlights_fade", cfg.highlightsFadeMs / 1000.0);
+	obs_data_set_bool(options, "show_all_matches", cfg.showAllMatches);
 	obs_data_set_string(options, "slow_motion_audio", cfg.slowMotionAudio.c_str());
 	obs_data_set_obj(snap, "options", options);
 
 	const Sport &s = sport();
 	OBSDataAutoRelease match = obs_data_create();
 	obs_data_set_string(match, "sport", s.id);
+	obs_data_set_string(match, "match_id", cfg.matchId.c_str());
+	obs_data_set_string(match, "title", cfg.matchId.empty() ? "" : matchTitle(this->match).c_str());
 	obs_data_set_int(match, "phase", cfg.matchPhase);
 	obs_data_set_string(match, "phase_name", phaseName(s, cfg.matchPhase).c_str());
 	obs_data_set_bool(match, "in_break", isBreakPhase(s, cfg.matchPhase));
@@ -1933,8 +2351,9 @@ void ReplayController::rebuildEventsSnapshot()
 {
 	OBSDataAutoRelease snap = obs_data_create();
 	OBSDataArrayAutoRelease list = obs_data_array_create();
-	for (size_t i = 0; i < eventList.size(); i++) {
-		OBSDataAutoRelease item = eventToData(eventList[i]);
+	const auto shown = listedEvents();
+	for (size_t i = 0; i < shown.size(); i++) {
+		OBSDataAutoRelease item = eventToData(*shown[i]);
 		obs_data_set_int(item, "index", (long long)i + 1);
 		obs_data_array_push_back(list, item);
 	}
@@ -1956,12 +2375,35 @@ void ReplayController::rebuildMatchSnapshot()
 	obs_data_set_string(snap, "sport", s.id);
 	obs_data_set_string(snap, "sport_name", text(s.nameKey));
 	obs_data_set_string(snap, "match_id", cfg.matchId.c_str());
+	obs_data_set_string(snap, "title", cfg.matchId.empty() ? "" : matchTitle(match).c_str());
+	obs_data_set_string(snap, "name", match.name.c_str());
+	obs_data_set_string(snap, "home", match.home.c_str());
+	obs_data_set_string(snap, "away", match.away.c_str());
+	obs_data_set_string(snap, "folder", replayFolder().c_str());
 	obs_data_set_int(snap, "phase", cfg.matchPhase);
 	obs_data_set_string(snap, "phase_name", phaseName(s, cfg.matchPhase).c_str());
 	obs_data_set_int(snap, "period", periodOfPhase(cfg.matchPhase));
 	obs_data_set_bool(snap, "in_break", isBreakPhase(s, cfg.matchPhase));
 	obs_data_set_int(snap, "current_reel", currentReel());
 	obs_data_set_bool(snap, "loop_highlights", cfg.loopHighlights);
+	obs_data_set_double(snap, "highlights_fade", cfg.highlightsFadeMs / 1000.0);
+
+	OBSDataArrayAutoRelease known = obs_data_array_create();
+	for (const MatchInfo &m : matches()) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_string(item, "id", m.id.c_str());
+		obs_data_set_string(item, "title", matchTitle(m).c_str());
+		obs_data_set_string(item, "name", m.name.c_str());
+		obs_data_set_string(item, "home", m.home.c_str());
+		obs_data_set_string(item, "away", m.away.c_str());
+		obs_data_set_string(item, "folder", m.folder.c_str());
+		obs_data_set_int(item, "phase", m.phase);
+		obs_data_set_string(item, "phase_name", phaseName(s, m.phase).c_str());
+		obs_data_set_int(item, "created", m.created);
+		obs_data_set_bool(item, "open", m.id == cfg.matchId);
+		obs_data_array_push_back(known, item);
+	}
+	obs_data_set_array(snap, "matches", known);
 
 	OBSDataArrayAutoRelease phases = obs_data_array_create();
 	for (int phase = 0; s.periods && phase < phaseCount(s); phase++) {
