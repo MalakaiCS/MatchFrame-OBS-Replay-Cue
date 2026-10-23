@@ -43,6 +43,7 @@ struct Config {
 	int keyintSec = 1;
 	int maxHeight = 1080;
 	int audioTrack = 1;
+	bool captureHdr = true; /* record HDR when the canvas is HDR and the encoder can */
 
 	/* replays */
 	std::string folder;
@@ -65,6 +66,7 @@ struct Config {
 	bool cycleAngles = false;
 	bool returnToLive = true;
 	bool playAudio = true;
+	std::string slowMotionAudio = "natural"; /* "natural", "slowed" or "off" */
 	bool hwDecode = true;
 	bool startCuedOnLive = true;
 
@@ -76,6 +78,8 @@ struct Config {
 	std::string highlightsScene; /* empty: the replay scene */
 	double highlightsSpeed = 1.0;
 	bool loopHighlights = false;
+	bool autoHighlights = false; /* play the reel when a break starts */
+	int autoHighlightsDelay = 5; /* seconds after the break is called */
 
 	void load();
 	void save() const;

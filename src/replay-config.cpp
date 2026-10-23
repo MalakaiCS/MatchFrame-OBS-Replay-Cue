@@ -85,6 +85,8 @@ void Config::load()
 	highlightsScene = getString(data, "highlights_scene", highlightsScene);
 	highlightsSpeed = std::clamp(getDouble(data, "highlights_speed", highlightsSpeed), 0.05, 2.0);
 	loopHighlights = getBool(data, "loop_highlights", loopHighlights);
+	autoHighlights = getBool(data, "auto_highlights", autoHighlights);
+	autoHighlightsDelay = std::clamp(getInt(data, "auto_highlights_delay", autoHighlightsDelay), 0, 120);
 
 	obs_data_array_t *arr = obs_data_get_array(data, "angles");
 	for (size_t i = 0, n = obs_data_array_count(arr); i < n && angles.size() < (size_t)kMaxAngles; i++) {
@@ -107,6 +109,7 @@ void Config::load()
 	keyintSec = std::clamp(getInt(data, "keyint_sec", keyintSec), 1, 10);
 	maxHeight = std::max(0, getInt(data, "max_height", maxHeight));
 	audioTrack = std::clamp(getInt(data, "audio_track", audioTrack), 0, 6);
+	captureHdr = getBool(data, "capture_hdr", captureHdr);
 
 	folder = getString(data, "folder", folder);
 	watchFolder = getBool(data, "watch_folder", watchFolder);
@@ -139,6 +142,9 @@ void Config::load()
 	cycleAngles = getBool(data, "cycle_angles", cycleAngles);
 	returnToLive = getBool(data, "return_to_live", returnToLive);
 	playAudio = getBool(data, "play_audio", playAudio);
+	slowMotionAudio = getString(data, "slow_motion_audio", slowMotionAudio);
+	if (slowMotionAudio != "natural" && slowMotionAudio != "slowed" && slowMotionAudio != "off")
+		slowMotionAudio = "natural";
 	hwDecode = getBool(data, "hw_decode", hwDecode);
 	startCuedOnLive = getBool(data, "start_cued_on_live", startCuedOnLive);
 
@@ -186,6 +192,7 @@ void Config::save() const
 	obs_data_set_int(data, "keyint_sec", keyintSec);
 	obs_data_set_int(data, "max_height", maxHeight);
 	obs_data_set_int(data, "audio_track", audioTrack);
+	obs_data_set_bool(data, "capture_hdr", captureHdr);
 
 	obs_data_set_string(data, "folder", folder.c_str());
 	obs_data_set_bool(data, "watch_folder", watchFolder);
@@ -215,6 +222,7 @@ void Config::save() const
 	obs_data_set_bool(data, "cycle_angles", cycleAngles);
 	obs_data_set_bool(data, "return_to_live", returnToLive);
 	obs_data_set_bool(data, "play_audio", playAudio);
+	obs_data_set_string(data, "slow_motion_audio", slowMotionAudio.c_str());
 	obs_data_set_bool(data, "hw_decode", hwDecode);
 	obs_data_set_bool(data, "start_cued_on_live", startCuedOnLive);
 
@@ -225,6 +233,8 @@ void Config::save() const
 	obs_data_set_string(data, "highlights_scene", highlightsScene.c_str());
 	obs_data_set_double(data, "highlights_speed", highlightsSpeed);
 	obs_data_set_bool(data, "loop_highlights", loopHighlights);
+	obs_data_set_bool(data, "auto_highlights", autoHighlights);
+	obs_data_set_int(data, "auto_highlights_delay", autoHighlightsDelay);
 
 	obs_data_save_json_pretty_safe(data, path.c_str(), "tmp", "bak");
 	obs_data_release(data);
@@ -248,6 +258,7 @@ CaptureSettings Config::captureSettings() const
 	s.maxHeight = maxHeight;
 	s.bufferSeconds = bufferSeconds;
 	s.audioTrack = audioTrack;
+	s.hdr = captureHdr;
 	return s;
 }
 

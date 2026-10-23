@@ -244,9 +244,11 @@ void reqSetOptions(obs_data_t *request, obs_data_t *response, void *)
 	const bool hasNext = obs_data_has_user_value(request, "autoPlayNext");
 	const bool hasCycle = obs_data_has_user_value(request, "cycleAngles");
 	const bool hasReturn = obs_data_has_user_value(request, "returnToLive");
+	const bool hasAuto = obs_data_has_user_value(request, "autoHighlights");
 	const bool next = obs_data_get_bool(request, "autoPlayNext");
 	const bool cycle = obs_data_get_bool(request, "cycleAngles");
 	const bool ret = obs_data_get_bool(request, "returnToLive");
+	const bool autoHighlights = obs_data_get_bool(request, "autoHighlights");
 	queueAction(response, [=](ReplayController &c) {
 		if (hasNext)
 			c.setAutoPlayNext(next);
@@ -254,6 +256,8 @@ void reqSetOptions(obs_data_t *request, obs_data_t *response, void *)
 			c.setCycleAngles(cycle);
 		if (hasReturn)
 			c.setReturnToLive(ret);
+		if (hasAuto)
+			c.setAutoHighlights(autoHighlights);
 	});
 }
 
@@ -342,6 +346,13 @@ void reqPlayHighlights(obs_data_t *request, obs_data_t *response, void *)
 	});
 }
 
+void reqExportHighlights(obs_data_t *request, obs_data_t *response, void *)
+{
+	const int reel = obs_data_has_user_value(request, "reel") ? (int)obs_data_get_int(request, "reel") : -1;
+	const int angle = obs_data_has_user_value(request, "angle") ? (int)obs_data_get_int(request, "angle") - 1 : -1;
+	queueAction(response, [reel, angle](ReplayController &c) { c.exportHighlights(reel, angle); });
+}
+
 void reqSetHighlight(obs_data_t *request, obs_data_t *response, void *)
 {
 	std::string id;
@@ -425,6 +436,7 @@ const Request kRequests[] = {
 	{"NextMatchPhase", reqNextMatchPhase},
 	{"NewMatch", reqNewMatch},
 	{"PlayHighlights", reqPlayHighlights},
+	{"ExportHighlights", reqExportHighlights},
 	{"SetHighlight", reqSetHighlight},
 	{"SetEventPeriod", reqSetEventPeriod},
 	{"SaveUiSnapshot", reqSaveUiSnapshot},

@@ -119,7 +119,9 @@ public slots:
 	void pause();
 	void resume();
 	void restart();
-	void returnToLive();
+	/* byOperator: a person asked for it, which also cancels pending
+	 * automatic highlights (false when a replay ends on its own) */
+	void returnToLive(bool byOperator = true);
 
 	void setAngle(int angle);
 	void nextAngle();
@@ -143,7 +145,10 @@ public slots:
 	void nextMatchPhase();
 	void newMatch();
 	void playHighlights(int reel = -1); /* -1: currentReel() */
+	/* angle -1: the selected angle; every replay that has it is exported from it */
+	void exportHighlights(int reel = -1, int angle = -1);
 	void setHighlightsLoop(bool enabled);
+	void setAutoHighlights(bool enabled);
 	void setHighlight(const QString &id, bool on);
 	void toggleHighlight(const QString &id);
 	void setEventPeriod(const QString &id, int period);
@@ -185,6 +190,11 @@ private:
 	void startEvent(const ReplayEvent &event, int angle, bool autoplay, bool goLive);
 	void playReelFrom(const QStringList &ids, int index);
 	void matchUpdated();
+	void scheduleAutoHighlights(int reel);
+	void cancelAutoHighlights();
+	void runAutoHighlights(int generation);
+	bool replayOnAir() const;
+	void onReelExported(const ReelResult &result, const QString &name, const QStringList &replays);
 	void goLiveNow(obs_source_t *scene);
 	void switchProgram(obs_source_t *scene, const std::string &transitionName);
 	void restoreTransition();
@@ -230,6 +240,10 @@ private:
 	int64_t pendingLiveDeadline = 0;
 	bool highlightSession = false;
 	int highlightReel = 0;
+
+	/* automatic highlights at a break */
+	int autoReel = -1;      /* reel waiting to play, -1: none */
+	int autoGeneration = 0; /* bumped to cancel a pending start */
 
 	/* folder scanning */
 	ProbeCache probeCache;

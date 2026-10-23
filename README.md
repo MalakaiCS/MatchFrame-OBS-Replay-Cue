@@ -25,6 +25,10 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
   and **cycle angles** (show the replay from every camera in turn).
 - **Slow motion** at 25/50/75% or any speed from 5–200%, frame stepping,
   scrubbing, pause, cue (load paused, in Preview when using Studio Mode).
+  **Slow-motion audio** is time-stretched so crowd noise and voices keep their
+  pitch (or slowed down like tape, or silent: your choice).
+- **HDR:** on an HDR canvas (Rec. 2100 PQ/HLG) cameras are recorded in 10-bit
+  HDR with an HEVC or AV1 encoder, and replays play back in HDR.
 - **Folder import:** clips dropped into the replay folder become replays, and
   multi-angle files are grouped automatically (`Cam1/goal.mp4` + `Cam2/goal.mp4`,
   or `goal_Cam1.mp4` + `goal_Cam2.mp4`). Clips saved by the OBS Replay Buffer
@@ -34,8 +38,9 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
 - **Sports and highlights:** pick your sport (football, rugby, AFL, netball,
   basketball and more) and every replay is stamped with the half, quarter or
   period it was saved in. At Half Time and Full Time a **Highlights** tab has the
-  reel ready to roll, and can loop it through the break.
-- **Control surfaces:** 34 OBS hotkeys and 44 obs-websocket requests for
+  reel ready to roll (or rolls it by itself), can loop it through the break, and
+  **exports the reel as one MP4** for social media.
+- **Control surfaces:** 34 OBS hotkeys and 45 obs-websocket requests for
   Stream Deck, Bitfocus Companion, Touch Portal or your own scripts.
 
 ## Requirements
@@ -51,6 +56,9 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
 - RAM for the buffers: cameras × bitrate × buffer length. 4 cameras at
   25 Mbps with a 2-minute buffer ≈ 1.4 GB. The settings dialog shows the
   estimate.
+- HDR recording needs an HDR canvas (Settings → Advanced → Video in OBS) and an
+  encoder that does 10-bit HEVC or AV1 (NVENC, AMF, Quick Sync, Apple
+  VideoToolbox); *Automatic* picks one. Otherwise cameras are recorded in SDR.
 
 ## Install
 
@@ -121,7 +129,18 @@ builds them as you go:
    *Cycle angles* if it is on. ⏮/⏭ step through the reel. With **Loop** on,
    the reel repeats until you press **Back to Live**, so it can fill the whole
    break.
-4. **Give highlights their own look (optional).** Set a *Highlights scene* in
+4. **Or let it roll by itself.** Tick *Play the highlights automatically when
+   a break starts* in Settings → Sport. Calling the break puts its reel on air
+   after the delay you choose (5 s by default). A replay already on air is
+   never cut off: the reel follows straight on from it. **Back to Live**
+   cancels a reel that has not started yet.
+5. **Post it.** **Export reel** saves the ticked replays as one MP4 in the
+   export folder (e.g. `…_Half-Time-highlights.mp4`), from the selected angle,
+   ready for social media. The clips are joined without re-encoding, so it
+   takes seconds and does not load the computer during the broadcast. A clip
+   that cannot be joined to the others (a different camera size or codec, such
+   as an imported file) is left out and named in the message.
+6. **Give highlights their own look (optional).** Set a *Highlights scene* in
    Settings → Sport and reels play there instead of on the Replay scene. Add a
    "HALF TIME HIGHLIGHTS" graphic to it. The scene is created with the player
    the first time a reel plays.
@@ -198,7 +217,7 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | `SetSpeed` | `speed` (0.05–2.0) or `percent` | Slow motion |
 | `Seek` | `position` (s) | Jump within the replay |
 | `Step` | `frames` (±n) | Frame step |
-| `SetOptions` | `autoPlayNext?`, `cycleAngles?`, `returnToLive?` | Toggle behaviour |
+| `SetOptions` | `autoPlayNext?`, `cycleAngles?`, `returnToLive?`, `autoHighlights?` | Toggle behaviour |
 | `RenameEvent` / `SetEventTag` / `ToggleFavorite` | `id`/`index`, `name`/`tag` | Edit a replay |
 | `DeleteEvent` | `id`/`index` | Move a replay's files to the Trash |
 | `ExportEvent` | `id`/`index`?, `angle?`, `trim?` (default true) | Export MP4s to the export folder |
@@ -208,6 +227,7 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | `SetMatchPhase` | `phase` (0 = pre-match) | Jump to a phase (numbers from `GetMatch`) |
 | `NewMatch` | – | Start a new match with empty reels |
 | `PlayHighlights` | `reel?`, `loop?` | Play a highlights reel (default: the current break's) |
+| `ExportHighlights` | `reel?`, `angle?` | Save a highlights reel as one MP4 in the export folder |
 | `SetHighlight` | `id`/`index`?, `highlight?` | Put a replay in or out of the highlights (toggles if `highlight` is omitted) |
 | `SetEventPeriod` | `id`/`index`, `period` | Move a replay to another period |
 | `SaveUiSnapshot` | `folder` | Save PNGs of the dock and settings (for docs) |
@@ -218,7 +238,8 @@ football; `GetMatch` lists them). Replays in `GetEvents` carry `highlight`,
 
 Vendor events (subscribe to `Vendors`): `ReplayCreated`, `PlaybackStarted`,
 `PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`, `MatchPhaseChanged`,
-`HighlightsStarted`.
+`HighlightsStarted`, `HighlightsExported` (with the file path, so a script can
+upload it).
 
 `tools/replaycue_ws.py` is a dependency-free command-line client:
 
@@ -267,8 +288,9 @@ for it.
 
 - Keep the keyframe interval at 1 s (default). Replays start on the keyframe
   before IN, and scrubbing/angle seeks decode from the previous keyframe.
-- Replays play audio from the selected angle at 100% speed only; slow motion
-  is silent, which is the broadcast norm.
+- Replays play the audio of the selected angle. In slow motion it is
+  time-stretched by default; Settings → Playback → *Slow-motion audio* can make
+  it tape-style (lower pitch) or silent.
 - Use *Operator delay compensation* if your monitor or multiviewer runs behind
   real time.
 - Put a "REPLAY" bug or wipe graphic on the Replay scene above the player.
@@ -278,8 +300,11 @@ for it.
 ## Limitations
 
 - Exports start on the keyframe at or before IN (at most one keyframe
-  interval early); they are stream copies, not re-encodes.
-- HDR canvases are captured as SDR (Rec. 709).
+  interval early); they are stream copies, not re-encodes. An exported reel
+  uses one angle for every replay, and only clips with the same size and codec
+  can be joined.
+- HDR is recorded only with a 10-bit HEVC or AV1 encoder; an H.264 encoder on
+  an HDR canvas records SDR (Rec. 709).
 - Playing many angles decodes all of them at once so switching is instant;
   hardware decoding is on by default.
 - Hotkeys are global to the plugin, not per replay. Use `PlayEvent` with an

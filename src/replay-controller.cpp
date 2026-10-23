@@ -233,7 +233,8 @@ bool sameCapture(const Config &a, const Config &b)
 		    a.angles[i].enabled != b.angles[i].enabled)
 			return false;
 	return a.encoderId == b.encoderId && a.bitrateKbps == b.bitrateKbps && a.keyintSec == b.keyintSec &&
-	       a.maxHeight == b.maxHeight && a.bufferSeconds == b.bufferSeconds && a.audioTrack == b.audioTrack;
+	       a.maxHeight == b.maxHeight && a.bufferSeconds == b.bufferSeconds && a.audioTrack == b.audioTrack &&
+	       a.captureHdr == b.captureHdr;
 }
 
 std::string uniquePath(const std::string &dir, const std::string &stem, const std::string &ext)
@@ -522,6 +523,8 @@ void ReplayController::applyConfig(const Config &updated)
 		refreshEvents();
 	}
 	updateWatcher();
+	if (sportChanged || !cfg.autoHighlights)
+		cancelAutoHighlights();
 	rebuildMatchSnapshot();
 	emit statusChanged();
 	if (sportChanged)
@@ -919,6 +922,7 @@ void ReplayController::setMatchPhase(int phase)
 	phase = std::clamp(phase, 0, phaseCount(s) - 1);
 	if (phase == cfg.matchPhase)
 		return;
+	const int previous = cfg.matchPhase;
 	cfg.matchPhase = phase;
 	if (phase > 0 && cfg.matchId.empty())
 		cfg.matchId = formatFileStamp(wallClockSeconds());
@@ -929,6 +933,13 @@ void ReplayController::setMatchPhase(int phase)
 	else if (phase > 0)
 		say(QString(text("Msg.PeriodStarted")).arg(name));
 	matchUpdated();
+
+	/* calling the break at the end of a period (not jumping around the
+	 * match to fix a mistake) can start that break's highlights */
+	if (cfg.autoHighlights && isBreakPhase(s, phase) && phase == previous + 1)
+		scheduleAutoHighlights(phase);
+	else
+		cancelAutoHighlights();
 }
 
 void ReplayController::nextMatchPhase()
@@ -949,6 +960,7 @@ void ReplayController::newMatch()
 {
 	cfg.matchPhase = 0;
 	cfg.matchId.clear();
+	cancelAutoHighlights();
 	say(text("Msg.NewMatch"));
 	matchUpdated();
 }
@@ -961,6 +973,7 @@ void ReplayController::playHighlights(int reel)
 
 	const QStringList ids = reelIds(reel);
 	const QString name = qstr(reelName(sport(), reel));
+	cancelAutoHighlights();
 	if (ids.isEmpty()) {
 		say(QString(text("Msg.NoHighlights")).arg(name), true);
 		return;
@@ -1002,6 +1015,133 @@ void ReplayController::setHighlightsLoop(bool enabled)
 	cfg.save();
 	rebuildMatchSnapshot();
 	emit statusChanged();
+}
+
+void ReplayController::setAutoHighlights(bool enabled)
+{
+	cfg.autoHighlights = enabled;
+	cfg.save();
+	if (!enabled)
+		cancelAutoHighlights();
+	emit statusChanged();
+}
+
+bool ReplayController::replayOnAir() const
+{
+	return !playingId.empty() &&
+	       (lastStatus.state == PlayerState::Loading || lastStatus.state == PlayerState::Playing ||
+		lastStatus.state == PlayerState::Paused);
+}
+
+void ReplayController::scheduleAutoHighlights(int reel)
+{
+	autoGeneration++;
+	autoReel = reel;
+	const int generation = autoGeneration;
+	QTimer::singleShot(cfg.autoHighlightsDelay * 1000, this,
+			   [this, generation]() { runAutoHighlights(generation); });
+	say(QString(text("Msg.AutoHighlightsIn")).arg(qstr(reelName(sport(), reel))).arg(cfg.autoHighlightsDelay));
+}
+
+void ReplayController::cancelAutoHighlights()
+{
+	autoGeneration++;
+	autoReel = -1;
+}
+
+void ReplayController::runAutoHighlights(int generation)
+{
+	if (generation != autoGeneration || autoReel < 0)
+		return;
+	if (replayOnAir()) {
+		/* never cut off a replay: the reel follows it (onPlaybackEnded) */
+		QTimer::singleShot(1000, this, [this, generation]() { runAutoHighlights(generation); });
+		return;
+	}
+	const int reel = autoReel;
+	cancelAutoHighlights();
+	playHighlights(reel);
+}
+
+void ReplayController::exportHighlights(int reel, int angle)
+{
+	const Sport &s = sport();
+	const std::vector<int> reels = reelsOf(s);
+	if (std::find(reels.begin(), reels.end(), reel) == reels.end())
+		reel = currentReel();
+
+	const QString name = qstr(reelName(s, reel));
+	if (angle < 0)
+		angle = angleIndex;
+	std::vector<ExportItem> segments;
+	QStringList replays;
+	for (const QString &id : reelIds(reel)) {
+		const ReplayEvent *event = findEvent(id.toStdString());
+		if (!event || event->angles.empty())
+			continue;
+		const size_t a = (size_t)std::clamp(angle, 0, (int)event->angles.size() - 1);
+		ExportItem item;
+		item.input = event->angles[a].file;
+		if (event->inUsec) {
+			item.start = event->inOffset(a);
+			item.end = item.start + event->duration;
+		}
+		segments.push_back(item);
+		replays << qstr(event->name);
+	}
+	if (segments.empty()) {
+		say(QString(text("Msg.NoHighlights")).arg(name), true);
+		return;
+	}
+
+	const QString title = s.periods && reel > 0 ? QString(text("Export.ReelName")).arg(qstr(phaseName(s, reel)))
+						    : QString(text("Export.AllName"));
+	const std::string stamp = cfg.matchId.empty() ? formatFileStamp(wallClockSeconds()) : cfg.matchId;
+	const std::string folder = cfg.exportFolder.empty() ? joinPath(cfg.folder, "Exports") : cfg.exportFolder;
+	/* the writer numbers it (_2, _3...) if the name is taken when it writes */
+	const std::string output = joinPath(folder, stamp + "_" + sanitizeFileName(title.toStdString()) + ".mp4");
+
+	say(QString(text("Msg.ExportingReel")).arg(name).arg(segments.size()));
+	writer->enqueueReel(std::move(segments), output, [this, name, replays](ReelResult result) {
+		QMetaObject::invokeMethod(
+			this, [this, result, name, replays]() { onReelExported(result, name, replays); },
+			Qt::QueuedConnection);
+	});
+}
+
+void ReplayController::onReelExported(const ReelResult &result, const QString &name, const QStringList &replays)
+{
+	if (!result.ok) {
+		say(QString(text("Msg.ReelFailed")).arg(name, qstr(result.error)), true);
+		return;
+	}
+
+	QStringList skipped;
+	for (size_t index : result.skipped)
+		if (index < (size_t)replays.size())
+			skipped << replays[(qsizetype)index];
+	QString msg = QString(text("Msg.ReelExported"))
+			      .arg(name)
+			      .arg(replays.size() - skipped.size())
+			      .arg(qstr(formatDuration(result.duration)))
+			      .arg(qstr(result.output));
+	if (!skipped.isEmpty())
+		msg += " " + QString(text("Msg.ReelSkipped")).arg(skipped.join(", "));
+	say(msg, !skipped.isEmpty());
+
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_string(data, "name", name.toUtf8().constData());
+	obs_data_set_string(data, "file", result.output.c_str());
+	obs_data_set_int(data, "count", replays.size() - skipped.size());
+	obs_data_set_double(data, "duration", result.duration);
+	OBSDataArrayAutoRelease left = obs_data_array_create();
+	for (const QString &replay : skipped) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_string(item, "name", replay.toUtf8().constData());
+		obs_data_array_push_back(left, item);
+	}
+	obs_data_set_array(data, "skipped", left);
+	emitVendor("HighlightsExported", data);
 }
 
 void ReplayController::adoptIntoMatch(ReplayEvent &event)
@@ -1098,7 +1238,7 @@ void ReplayController::exportEvent(const QString &id, int angle, bool trimToMark
 		ExportItem item;
 		item.input = event->angles[i].file;
 		const std::string stem = sanitizeFileName(event->name) + "_" + sanitizeFileName(event->angles[i].label);
-		item.output = uniquePath(cfg.exportFolder, stem, ".mp4");
+		item.output = joinPath(cfg.exportFolder, stem + ".mp4"); /* numbered by the writer if taken */
 		if (trimToMarks && event->inUsec) {
 			item.start = event->inOffset(i);
 			item.end = item.start + event->duration;
@@ -1287,6 +1427,9 @@ PlayRequest ReplayController::buildRequest(const ReplayEvent &event, int angle, 
 	request.speed = highlightSession ? cfg.highlightsSpeed : speedValue;
 	request.autoplay = autoplay;
 	request.audio = cfg.playAudio;
+	request.slowAudio = cfg.slowMotionAudio == "off"      ? SlowAudio::Off
+			    : cfg.slowMotionAudio == "slowed" ? SlowAudio::Slowed
+							      : SlowAudio::Natural;
 	request.hwDecode = cfg.hwDecode;
 	return request;
 }
@@ -1522,8 +1665,10 @@ void ReplayController::restart()
 		ref.player->restart();
 }
 
-void ReplayController::returnToLive()
+void ReplayController::returnToLive(bool byOperator)
 {
+	if (byOperator)
+		cancelAutoHighlights();
 	queue.clear();
 	cued = false;
 	pendingLiveScene = nullptr;
@@ -1663,6 +1808,14 @@ void ReplayController::onPlaybackEnded()
 		}
 	}
 
+	if (autoReel >= 0 && !highlightSession) {
+		/* the break's reel is due: go straight on from the replay scene
+		 * rather than cutting to live and back */
+		runAutoHighlights(autoGeneration);
+		if (highlightsPlaying())
+			return;
+	}
+
 	if (highlightSession) {
 		/* loop the reel through the break; it picks up replays added since */
 		const QStringList ids = reelIds(highlightReel);
@@ -1679,7 +1832,7 @@ void ReplayController::onPlaybackEnded()
 	}
 
 	if (cfg.returnToLive)
-		returnToLive();
+		returnToLive(false);
 }
 
 void ReplayController::poll()
@@ -1759,6 +1912,8 @@ void ReplayController::poll()
 	obs_data_set_bool(options, "cycle_angles", cfg.cycleAngles);
 	obs_data_set_bool(options, "return_to_live", cfg.returnToLive);
 	obs_data_set_bool(options, "loop_highlights", cfg.loopHighlights);
+	obs_data_set_bool(options, "auto_highlights", cfg.autoHighlights);
+	obs_data_set_string(options, "slow_motion_audio", cfg.slowMotionAudio.c_str());
 	obs_data_set_obj(snap, "options", options);
 
 	const Sport &s = sport();

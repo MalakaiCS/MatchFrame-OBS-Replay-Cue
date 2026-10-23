@@ -36,6 +36,8 @@ struct StreamInfo {
 	uint32_t height = 0;
 	uint32_t fpsNum = 0;
 	uint32_t fpsDen = 0;
+	enum video_colorspace colorspace = VIDEO_CS_DEFAULT; /* tagged in the files */
+	bool fullRange = false;
 	uint32_t sampleRate = 0;
 	uint32_t channels = 0;
 };
