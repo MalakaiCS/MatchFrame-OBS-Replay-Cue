@@ -9,6 +9,7 @@ set(
   src/cue-dock.cpp
   src/ffmpeg-compat.cpp
   src/highlights-tab.cpp
+  src/match.cpp
   src/packet-buffer.cpp
   src/plugin-main.cpp
   src/rc-common.cpp
@@ -30,6 +31,7 @@ set(
   src/cue-dock.hpp
   src/ffmpeg-compat.hpp
   src/highlights-tab.hpp
+  src/match.hpp
   src/packet-buffer.hpp
   src/plugin-support.h
   src/rc-common.hpp

@@ -349,18 +349,16 @@ double ProbeCache::duration(const std::string &path)
 	return entry.duration;
 }
 
-std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::vector<std::string> &angleLabels,
-					  ProbeCache &cache)
+namespace {
+
+/* One folder's events: its sidecars and loose files, including camera
+ * subfolders. Loose files join `matchId`. */
+void scanOneFolder(const std::string &folder, const std::set<std::string> &labels,
+		   const std::vector<std::string> &angleLabels, ProbeCache &cache, const std::string &matchId,
+		   std::vector<ReplayEvent> &events)
 {
-	std::vector<ReplayEvent> events;
 	std::error_code ec;
 	fs::path root = toPath(folder);
-	if (folder.empty() || !fs::is_directory(root, ec))
-		return events;
-
-	std::set<std::string> labels;
-	for (const std::string &label : angleLabels)
-		labels.insert(normalizeTag(label));
 
 	/* 1. sidecars written by Replay Cue */
 	std::set<std::string> referenced;
@@ -373,6 +371,7 @@ std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::
 			continue;
 		for (const AngleClip &clip : event.angles)
 			referenced.insert(normalizedKey(clip.file));
+		event.folder = folder;
 		events.push_back(std::move(event));
 	}
 
@@ -425,6 +424,8 @@ std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::
 		event.id = "file:" + normalizedKey(joinPath(folder, key));
 		event.name = key;
 		event.imported = true;
+		event.match = matchId;
+		event.folder = folder;
 		event.created = files.front().mtime;
 		std::set<std::string> used;
 		for (const LooseFile &f : files) {
@@ -442,6 +443,32 @@ std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::
 				break;
 		}
 		events.push_back(std::move(event));
+	}
+}
+
+} // namespace
+
+std::vector<ReplayEvent> scanReplayFolder(const std::string &folder, const std::vector<std::string> &angleLabels,
+					  ProbeCache &cache, std::vector<MatchInfo> *matches)
+{
+	std::vector<ReplayEvent> events;
+	std::error_code ec;
+	fs::path root = toPath(folder);
+	if (folder.empty() || !fs::is_directory(root, ec))
+		return events;
+
+	std::set<std::string> labels;
+	for (const std::string &label : angleLabels)
+		labels.insert(normalizeTag(label));
+
+	scanOneFolder(folder, labels, angleLabels, cache, std::string(), events);
+	for (const auto &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+		MatchInfo match;
+		if (!entry.is_directory(ec) || !loadMatchFile(fromPath(entry.path()), match))
+			continue;
+		scanOneFolder(match.folder, labels, angleLabels, cache, match.id, events);
+		if (matches)
+			matches->push_back(match);
 	}
 
 	std::sort(events.begin(), events.end(), [](const ReplayEvent &a, const ReplayEvent &b) {

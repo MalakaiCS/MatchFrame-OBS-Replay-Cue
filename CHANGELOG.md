@@ -5,6 +5,38 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
+## [1.3.0] - 2026-10-23
+
+### Added
+
+- Matches: **New match…** names the match and its teams ("Match 1: Leeds vs
+  York"). Each match gets its own folder in the replay folder
+  (`Match 1 - Leeds vs York`): its replays are saved there and its exported
+  highlights go into its `Highlights` folder
+  (`Match 1 - Leeds vs York - Full Time highlights.mp4`). The match bar shows
+  the match, and the Replays tab lists its replays, numbered from 1.
+- **Edit match…** renames a match or its teams (the folder follows), **Open
+  match** goes back to an earlier match where it left off, and *Show replays
+  from all matches* lists everything. The open match survives an OBS restart.
+- Highlights fade: in a highlights reel each replay fades into the next
+  (picture dissolve, the sound dips) instead of cutting. The next replay is
+  opened in advance so the fade starts on time. Settings → Sport → *Fade
+  between replays* sets the length (0.5 s by default) or *Cut*.
+- obs-websocket requests `GetMatches`, `OpenMatch` and `SetMatchInfo`, and the
+  `MatchChanged` event. `NewMatch` takes `name`, `home` and `away`; `GetMatch`
+  reports the match's title, teams and folder; `SetOptions` takes
+  `highlightsFade` and `showAllMatches`.
+
+### Changed
+
+- **New match** creates the match straight away, in its own folder. Starting
+  the 1st half without one opens the next "Match N".
+- The Replays tab, `GetEvents` and the play next/previous/latest controls use
+  the open match's replays (plus clips that belong to no match). Matches from
+  before this version keep their replays in the replay folder and appear in
+  Open match by date.
+- Clips saved by the OBS Replay Buffer join the open match.
+
 ## [1.2.0] - 2026-10-23
 
 ### Added
@@ -118,6 +150,7 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
+[1.3.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.3.0
 [1.2.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.2.0
 [1.1.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.1.0
 [1.0.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.0.0

@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace rc {
@@ -112,7 +113,6 @@ SIMPLE(reqNextAngle, c.nextAngle())
 SIMPLE(reqPrevAngle, c.prevAngle())
 SIMPLE(reqRefresh, c.refreshEvents())
 SIMPLE(reqNextMatchPhase, c.nextMatchPhase())
-SIMPLE(reqNewMatch, c.newMatch())
 
 #undef SIMPLE
 
@@ -245,10 +245,14 @@ void reqSetOptions(obs_data_t *request, obs_data_t *response, void *)
 	const bool hasCycle = obs_data_has_user_value(request, "cycleAngles");
 	const bool hasReturn = obs_data_has_user_value(request, "returnToLive");
 	const bool hasAuto = obs_data_has_user_value(request, "autoHighlights");
+	const bool hasFade = obs_data_has_user_value(request, "highlightsFade");
+	const bool hasAll = obs_data_has_user_value(request, "showAllMatches");
 	const bool next = obs_data_get_bool(request, "autoPlayNext");
 	const bool cycle = obs_data_get_bool(request, "cycleAngles");
 	const bool ret = obs_data_get_bool(request, "returnToLive");
 	const bool autoHighlights = obs_data_get_bool(request, "autoHighlights");
+	const double fade = obs_data_get_double(request, "highlightsFade");
+	const bool all = obs_data_get_bool(request, "showAllMatches");
 	queueAction(response, [=](ReplayController &c) {
 		if (hasNext)
 			c.setAutoPlayNext(next);
@@ -258,6 +262,10 @@ void reqSetOptions(obs_data_t *request, obs_data_t *response, void *)
 			c.setReturnToLive(ret);
 		if (hasAuto)
 			c.setAutoHighlights(autoHighlights);
+		if (hasFade)
+			c.setHighlightsFade(fade);
+		if (hasAll)
+			c.setShowAllMatches(all);
 	});
 }
 
@@ -324,6 +332,53 @@ void reqGetMatch(obs_data_t *, obs_data_t *response, void *)
 	OBSDataAutoRelease snap = c->matchSnapshot();
 	obs_data_apply(response, snap);
 	obs_data_set_bool(response, "ok", true);
+}
+
+void reqGetMatches(obs_data_t *, obs_data_t *response, void *)
+{
+	ReplayController *c = controller.load();
+	if (!c)
+		return fail(response, "Replay Cue is shutting down");
+	OBSDataAutoRelease snap = c->matchSnapshot();
+	OBSDataArrayAutoRelease matches = obs_data_get_array(snap, "matches");
+	obs_data_set_array(response, "matches", matches);
+	obs_data_set_string(response, "open", obs_data_get_string(snap, "match_id"));
+	obs_data_set_bool(response, "ok", true);
+}
+
+void reqNewMatch(obs_data_t *request, obs_data_t *response, void *)
+{
+	const QString name = QString::fromUtf8(obs_data_get_string(request, "name"));
+	const QString home = QString::fromUtf8(obs_data_get_string(request, "home"));
+	const QString away = QString::fromUtf8(obs_data_get_string(request, "away"));
+	queueAction(response, [name, home, away](ReplayController &c) { c.newMatch(name, home, away); });
+}
+
+/* name, home and away: the ones not given stay as they are */
+void reqSetMatchInfo(obs_data_t *request, obs_data_t *response, void *)
+{
+	auto field = [request](const char *key) -> std::optional<QString> {
+		if (!obs_data_has_user_value(request, key))
+			return std::nullopt;
+		return QString::fromUtf8(obs_data_get_string(request, key));
+	};
+	const auto name = field("name"), home = field("home"), away = field("away");
+	if (!name && !home && !away)
+		return fail(response, "pass \"name\", \"home\" or \"away\"");
+	queueAction(response, [name, home, away](ReplayController &c) {
+		const MatchInfo &m = c.openMatch();
+		c.editMatch(name.value_or(QString::fromStdString(m.name)),
+			    home.value_or(QString::fromStdString(m.home)),
+			    away.value_or(QString::fromStdString(m.away)));
+	});
+}
+
+void reqOpenMatch(obs_data_t *request, obs_data_t *response, void *)
+{
+	const QString id = QString::fromUtf8(obs_data_get_string(request, "id"));
+	if (id.isEmpty())
+		return fail(response, "pass \"id\" (see GetMatches)");
+	queueAction(response, [id](ReplayController &c) { c.openMatch(id); });
 }
 
 void reqSetMatchPhase(obs_data_t *request, obs_data_t *response, void *)
@@ -435,6 +490,9 @@ const Request kRequests[] = {
 	{"SetMatchPhase", reqSetMatchPhase},
 	{"NextMatchPhase", reqNextMatchPhase},
 	{"NewMatch", reqNewMatch},
+	{"GetMatches", reqGetMatches},
+	{"OpenMatch", reqOpenMatch},
+	{"SetMatchInfo", reqSetMatchInfo},
 	{"PlayHighlights", reqPlayHighlights},
 	{"ExportHighlights", reqExportHighlights},
 	{"SetHighlight", reqSetHighlight},

@@ -72,12 +72,15 @@ struct Config {
 
 	/* sport and highlights */
 	std::string sport = "none";
-	int matchPhase = 0;  /* see sport.hpp */
-	std::string matchId; /* stamped on replays so each match has its own reels */
+	int matchPhase = 0;          /* see sport.hpp */
+	std::string matchId;         /* the open match, stamped on replays so each match has its own reels */
+	std::string matchFolder;     /* the open match's folder in `folder`, empty if it has none */
+	bool showAllMatches = false; /* list the replays of every match, not just the open one */
 	bool highlightNewReplays = true;
 	std::string highlightsScene; /* empty: the replay scene */
 	double highlightsSpeed = 1.0;
 	bool loopHighlights = false;
+	int highlightsFadeMs = 500;  /* cross-fade between the replays of a reel, 0: cut */
 	bool autoHighlights = false; /* play the reel when a break starts */
 	int autoHighlightsDelay = 5; /* seconds after the break is called */
 

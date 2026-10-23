@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -39,6 +40,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <cstring>
 
 namespace rc {
@@ -541,6 +543,16 @@ QWidget *SettingsDialog::buildSportTab()
 	loopHighlights->setChecked(initial.loopHighlights);
 	form->addRow(loopHighlights);
 
+	highlightsFade = new QDoubleSpinBox(page);
+	highlightsFade->setRange(0.0, 3.0);
+	highlightsFade->setSingleStep(0.1);
+	highlightsFade->setDecimals(1);
+	highlightsFade->setSuffix(" s");
+	highlightsFade->setSpecialValueText(T("Settings.FadeCut"));
+	highlightsFade->setValue(initial.highlightsFadeMs / 1000.0);
+	highlightsFade->setToolTip(T("Settings.HighlightsFadeTip"));
+	form->addRow(T("Settings.HighlightsFade"), highlightsFade);
+
 	auto *autoRow = new QWidget(page);
 	auto *autoLayout = new QHBoxLayout(autoRow);
 	autoLayout->setContentsMargins(0, 0, 0, 0);
@@ -637,6 +649,7 @@ Config SettingsDialog::result() const
 	cfg.highlightsScene = highlightsScene->text().trimmed().toStdString();
 	cfg.highlightsSpeed = highlightsSpeed->currentData().toDouble();
 	cfg.loopHighlights = loopHighlights->isChecked();
+	cfg.highlightsFadeMs = (int)std::lround(highlightsFade->value() * 1000.0);
 	cfg.autoHighlights = autoHighlights->isChecked();
 	cfg.autoHighlightsDelay = autoHighlightsDelay->value();
 	return cfg;

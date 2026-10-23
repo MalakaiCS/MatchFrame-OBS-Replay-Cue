@@ -33,9 +33,10 @@ namespace rc {
 
 class ReplayController;
 
-/* The dock's match bar: the sport, the current period or break, and a button
- * that moves the match on (1st Half -> Half Time -> 2nd Half -> Full Time).
- * Hidden when no sport is chosen. */
+/* The dock's match bar: the open match ("Match 1: Leeds vs York"), the
+ * current period or break, and a button that moves the match on (New match
+ * -> 1st Half -> Half Time -> 2nd Half -> Full Time). Its menu starts, edits
+ * and reopens matches. Hidden when no sport is chosen. */
 class MatchBar : public QWidget {
 	Q_OBJECT
 
@@ -48,13 +49,17 @@ private slots:
 private:
 	void advance();
 	void fillMenu();
-	void confirmNewMatch();
+	void startNewMatch();
+	void editMatch();
 
 	ReplayController *controller;
 	QLabel *label;
 	QPushButton *nextButton;
 	QToolButton *menuButton;
 };
+
+/* Saves a PNG of the New match dialog, filled in (SaveUiSnapshot, for docs). */
+void saveMatchDialogSnapshot(ReplayController *controller, const QString &path);
 
 /* The "Highlights" tab: the replays of one break's reel (Half Time, Full
  * Time...), ticked to include them, and the controls to play the reel. */

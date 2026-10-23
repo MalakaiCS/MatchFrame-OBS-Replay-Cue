@@ -360,14 +360,14 @@ QString CueDock::currentId() const
 void CueDock::rebuildEvents()
 {
 	updatingTable = true;
-	const auto &events = controller->events();
+	const auto events = controller->listedEvents();
 	const std::string playing = controller->playingEventId();
 	const Sport &sport = controller->sport();
 	table->setRowCount((int)events.size());
 	table->setColumnHidden(ColPeriod, sport.periods == 0);
 
 	for (int row = 0; row < (int)events.size(); row++) {
-		const ReplayEvent &e = events[(size_t)row];
+		const ReplayEvent &e = *events[(size_t)row];
 		QStringList labels;
 		QStringList files;
 		for (const AngleClip &clip : e.angles) {
@@ -729,6 +729,8 @@ void saveUiSnapshots(ReplayController *controller, const QString &folder)
 		tabs->setCurrentIndex(1);
 		snap(&dock, QSize(460, 720), QDir(folder).filePath("dock-highlights.png"));
 	}
+
+	saveMatchDialogSnapshot(controller, QDir(folder).filePath("match-dialog.png"));
 
 	SettingsDialog dialog(controller->config());
 	if (auto *tabs = dialog.findChild<QTabWidget *>()) {

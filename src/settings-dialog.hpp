@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QSpinBox;
@@ -94,6 +95,7 @@ private:
 	QLineEdit *highlightsScene = nullptr;
 	QComboBox *highlightsSpeed = nullptr;
 	QCheckBox *loopHighlights = nullptr;
+	QDoubleSpinBox *highlightsFade = nullptr;
 	QCheckBox *autoHighlights = nullptr;
 	QSpinBox *autoHighlightsDelay = nullptr;
 };
