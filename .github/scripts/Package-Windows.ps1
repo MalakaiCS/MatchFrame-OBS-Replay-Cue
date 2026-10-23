@@ -53,6 +53,7 @@ function Package {
         ErrorAction = 'SilentlyContinue'
         Path = @(
             "${ProjectRoot}/release/${ProductName}-*-windows-*.zip"
+            "${ProjectRoot}/release/${ProductName}-*-windows-*.exe"
         )
     }
 
@@ -66,6 +67,35 @@ function Package {
         Verbose = ($Env:CI -ne $null)
     }
     Compress-Archive -Force @CompressArgs
+    Log-Group
+
+    Log-Group "Building the ${ProductName} installer..."
+    $IsccFile = Get-Command -Name 'iscc.exe' -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty Source
+    if ( ! $IsccFile ) {
+        $IsccFile = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+    }
+    if ( ! ( Test-Path -Path $IsccFile ) ) {
+        Log-Information 'Installing Inno Setup...'
+        Invoke-External choco install innosetup --yes --no-progress
+    }
+
+    $ObsVersion = $BuildSpec.dependencies.'obs-studio'.version -split '\.'
+    $IsccArgs = @(
+        "/DProductName=${ProductName}"
+        "/DDisplayName=$($BuildSpec.displayName)"
+        "/DProductVersion=${ProductVersion}"
+        "/DFileVersion=$(($ProductVersion -split '-')[0])"
+        "/DAuthor=$($BuildSpec.author)"
+        "/DWebsite=$($BuildSpec.website)"
+        "/DObsMajor=$($ObsVersion[0])"
+        "/DObsMinor=$($ObsVersion[1])"
+        "/DSourceDir=$(Join-Path ${ProjectRoot} "release\${Configuration}\${ProductName}")"
+        "/DOutputDir=$(Join-Path ${ProjectRoot} 'release')"
+        "/DOutputBaseName=${OutputName}-Installer"
+        "${ProjectRoot}\cmake\windows\resources\installer-Windows.iss"
+    )
+    Invoke-External $IsccFile @IsccArgs
     Log-Group
 }
 

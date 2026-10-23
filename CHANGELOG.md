@@ -5,6 +5,18 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
+## [Unreleased]
+
+### Added
+
+- A Windows installer, `obs-replay-cue-<version>-windows-x64-Installer.exe`,
+  next to the `.zip` on the release page. It installs the plugin into
+  `C:\ProgramData\obs-studio\plugins\obs-replay-cue` (replacing an earlier
+  version or a copy from the `.zip`), asks you to close OBS Studio first, warns
+  if OBS Studio is missing or a version Replay Cue does not work with, and can
+  start OBS when it is done. Uninstall it from Settings → Apps; your settings
+  and replays are kept.
+
 ## [1.4.0] - 2026-10-23
 
 ### Added
@@ -168,6 +180,7 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
+[Unreleased]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/compare/1.4.0...HEAD
 [1.4.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.4.0
 [1.3.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.3.0
 [1.2.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.2.0
