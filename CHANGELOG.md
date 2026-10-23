@@ -5,7 +5,7 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
-## [Unreleased]
+## [1.3.0] - 2026-10-23
 
 ### Added
 
@@ -150,7 +150,7 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
-[Unreleased]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/compare/1.2.0...HEAD
+[1.3.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.3.0
 [1.2.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.2.0
 [1.1.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.1.0
 [1.0.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.0.0
