@@ -181,9 +181,12 @@ HighlightsTab::HighlightsTab(ReplayController *c, QWidget *parent) : QWidget(par
 	playButton->setStyleSheet("QPushButton { font-weight: bold; }");
 	loopCheck = new QCheckBox(T("Highlights.Loop"));
 	loopCheck->setToolTip(T("Highlights.LoopTip"));
+	exportButton = new QPushButton(T("Highlights.Export"));
+	exportButton->setToolTip(T("Highlights.ExportTip"));
 	summaryLabel = new QLabel();
 	playRow->addWidget(playButton);
 	playRow->addWidget(loopCheck);
+	playRow->addWidget(exportButton);
 	playRow->addStretch(1);
 	playRow->addWidget(summaryLabel);
 	root->addLayout(playRow);
@@ -191,6 +194,7 @@ HighlightsTab::HighlightsTab(ReplayController *c, QWidget *parent) : QWidget(par
 	connect(reelCombo, &QComboBox::currentIndexChanged, this, &HighlightsTab::rebuildList);
 	connect(playButton, &QPushButton::clicked, this, [this]() { controller->playHighlights(selectedReel()); });
 	connect(loopCheck, &QCheckBox::clicked, this, [this](bool on) { controller->setHighlightsLoop(on); });
+	connect(exportButton, &QPushButton::clicked, this, [this]() { controller->exportHighlights(selectedReel()); });
 	connect(table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
 		if (updating || item->column() != ColUse)
 			return;
@@ -308,6 +312,7 @@ void HighlightsTab::updateState()
 	const Config &cfg = controller->config();
 	loopCheck->setChecked(cfg.loopHighlights);
 	playButton->setEnabled(includedCount > 0);
+	exportButton->setEnabled(includedCount > 0);
 
 	const int reel = selectedReel();
 	if (controller->highlightsPlaying() && controller->playingReel() == reel) {

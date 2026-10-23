@@ -129,13 +129,22 @@ bool AngleCapture::start(obs_source_t *source)
 		outW += outW & 1;
 	}
 
+	const bool canvasHdr = ovi.colorspace == VIDEO_CS_2100_PQ || ovi.colorspace == VIDEO_CS_2100_HLG;
+	const std::string encoderId = CaptureEngine::resolveVideoEncoder(settings.encoderId, canvasHdr && settings.hdr);
+	if (encoderId.empty()) {
+		fail(text("Status.NoEncoder"));
+		return false;
+	}
+	/* HDR needs 10-bit HEVC or AV1; anything else records the canvas as SDR */
+	const bool useHdr = canvasHdr && settings.hdr && !hdrRejected && CaptureEngine::encoderSupportsHdr(encoderId);
+
 	ovi.base_width = width;
 	ovi.base_height = height;
 	ovi.output_width = outW;
 	ovi.output_height = outH;
-	ovi.output_format = VIDEO_FORMAT_NV12;
+	ovi.output_format = useHdr ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
 	ovi.scale_type = OBS_SCALE_BICUBIC;
-	if (ovi.colorspace == VIDEO_CS_2100_PQ || ovi.colorspace == VIDEO_CS_2100_HLG)
+	if (canvasHdr && !useHdr)
 		ovi.colorspace = VIDEO_CS_709;
 
 	view = obs_view_create();
@@ -143,12 +152,6 @@ bool AngleCapture::start(obs_source_t *source)
 	video = obs_view_add2(view, &ovi);
 	if (!video) {
 		fail(text("Status.ViewFailed"));
-		return false;
-	}
-
-	const std::string encoderId = CaptureEngine::resolveVideoEncoder(settings.encoderId);
-	if (encoderId.empty()) {
-		fail(text("Status.NoEncoder"));
 		return false;
 	}
 
@@ -161,6 +164,8 @@ bool AngleCapture::start(obs_source_t *source)
 	info.height = outH;
 	info.fpsNum = ovi.fps_num;
 	info.fpsDen = ovi.fps_den;
+	info.colorspace = ovi.colorspace;
+	info.fullRange = ovi.range == VIDEO_RANGE_FULL;
 	packets->setStreamInfo(info);
 
 	const std::string name = "Replay Cue - " + angle.label;
@@ -183,6 +188,14 @@ bool AngleCapture::start(obs_source_t *source)
 
 	if (!obs_output_start(output)) {
 		const char *err = obs_output_get_last_error(output);
+		if (useHdr) {
+			/* not every HEVC/AV1 encoder (or GPU) takes 10-bit */
+			obs_log(LOG_WARNING, "[%s] %s could not record HDR (%s), recording SDR instead",
+				angle.label.c_str(), encoderId.c_str(), err ? err : "encoder refused 10-bit");
+			stop();
+			hdrRejected = true;
+			return start(source);
+		}
 		fail(std::string(text("Status.EncoderFailed")) + (err ? std::string(": ") + err : std::string()));
 		return false;
 	}
@@ -191,9 +204,10 @@ bool AngleCapture::start(obs_source_t *source)
 	baseHeight = height;
 	outWidth = outW;
 	outHeight = outH;
+	hdr = useHdr;
 	state = text("Status.Recording");
-	obs_log(LOG_INFO, "[%s] capturing '%s' %ux%u -> %ux%u with %s", angle.label.c_str(), angle.sourceName.c_str(),
-		width, height, outW, outH, encoderId.c_str());
+	obs_log(LOG_INFO, "[%s] capturing '%s' %ux%u -> %ux%u with %s%s", angle.label.c_str(), angle.sourceName.c_str(),
+		width, height, outW, outH, encoderId.c_str(), useHdr ? " in HDR" : "");
 	return true;
 }
 
@@ -219,6 +233,7 @@ void AngleCapture::stop()
 	}
 	video = nullptr;
 	baseWidth = baseHeight = outWidth = outHeight = 0;
+	hdr = false;
 	state = text("Status.Stopped");
 }
 
@@ -264,6 +279,7 @@ AngleStatus AngleCapture::status() const
 	st.state = state;
 	st.width = outWidth;
 	st.height = outHeight;
+	st.hdr = hdr;
 	if (packets && !packets->empty()) {
 		st.bufferedSeconds = (double)(packets->newestUsec() - packets->oldestUsec()) / 1e6;
 		st.bytes = packets->byteSize();
@@ -435,11 +451,37 @@ std::string CaptureEngine::defaultVideoEncoder()
 	return all.empty() ? std::string() : all.front().first;
 }
 
-std::string CaptureEngine::resolveVideoEncoder(const std::string &preferred)
+std::string CaptureEngine::defaultHdrEncoder()
+{
+	static const char *preferred[] = {
+		"obs_nvenc_hevc_tex", "jim_hevc_nvenc",   "com.apple.videotoolbox.videoencoder.ave.hevc",
+		"obs_qsv11_hevc",     "h265_texture_amf", "obs_nvenc_av1_tex",
+		"jim_av1_nvenc",      "obs_qsv11_av1",    "av1_texture_amf",
+	};
+	for (const char *id : preferred)
+		if (isUsableVideoEncoder(id))
+			return id;
+	return std::string();
+}
+
+std::string CaptureEngine::resolveVideoEncoder(const std::string &preferred, bool hdr)
 {
 	if (!preferred.empty() && isUsableVideoEncoder(preferred.c_str()))
 		return preferred;
+	if (hdr) {
+		std::string id = defaultHdrEncoder();
+		if (!id.empty())
+			return id;
+	}
 	return defaultVideoEncoder();
+}
+
+bool CaptureEngine::encoderSupportsHdr(const std::string &id)
+{
+	if (!encoderExists(id.c_str()))
+		return false;
+	const char *codec = obs_get_encoder_codec(id.c_str());
+	return strcmp(codec, "hevc") == 0 || strcmp(codec, "av1") == 0;
 }
 
 } // namespace rc

@@ -951,6 +951,7 @@ void ReplayPlayer::doLoad(const PlayRequest &request)
 		speed = std::clamp(request.speed, 0.05, 4.0);
 		selected = std::clamp(request.angle, 0, std::max(0, (int)decoders.size() - 1));
 		playAudio = request.audio;
+		slowAudio = request.slowAudio;
 		eventId = request.eventId;
 		eventName = request.eventName;
 		error = anyOk ? std::string() : firstError;
@@ -1005,7 +1006,8 @@ static void outputVideo(obs_source_t *source, const AVFrame *frame)
 	obs_source_output_video(source, &out);
 }
 
-static void outputAudio(obs_source_t *source, const AVFrame *frame, uint64_t timestamp)
+/* rateScale < 1 plays the samples slower, and lower, than they were recorded */
+static void outputAudio(obs_source_t *source, const AVFrame *frame, uint64_t timestamp, double rateScale)
 {
 	enum audio_format format = convertSampleFormat(frame->format);
 	const int channels = frame->ch_layout.nb_channels;
@@ -1021,9 +1023,83 @@ static void outputAudio(obs_source_t *source, const AVFrame *frame, uint64_t tim
 	out.frames = (uint32_t)frame->nb_samples;
 	out.speakers = speakers;
 	out.format = format;
-	out.samples_per_sec = (uint32_t)frame->sample_rate;
+	out.samples_per_sec = (uint32_t)std::max(1L, std::lround(frame->sample_rate * rateScale));
 	out.timestamp = timestamp;
 	obs_source_output_audio(source, &out);
+}
+
+/* Converts any decoded sample format to interleaved float. */
+static bool toInterleavedFloat(const AVFrame *frame, std::vector<float> &out)
+{
+	const int channels = frame->ch_layout.nb_channels;
+	const int samples = frame->nb_samples;
+	const enum AVSampleFormat format = (enum AVSampleFormat)frame->format;
+	const enum AVSampleFormat packed = av_get_packed_sample_fmt(format);
+	const bool planar = av_sample_fmt_is_planar(format);
+	if (channels <= 0 || samples <= 0 || !frame->extended_data)
+		return false;
+
+	out.resize((size_t)channels * (size_t)samples);
+	for (int c = 0; c < channels; c++) {
+		const uint8_t *base = frame->extended_data[planar ? c : 0];
+		for (int i = 0; i < samples; i++) {
+			const size_t at = planar ? (size_t)i : (size_t)i * (size_t)channels + (size_t)c;
+			float value;
+			switch (packed) {
+			case AV_SAMPLE_FMT_U8:
+				value = ((float)base[at] - 128.0f) / 128.0f;
+				break;
+			case AV_SAMPLE_FMT_S16:
+				value = (float)reinterpret_cast<const int16_t *>(base)[at] / 32768.0f;
+				break;
+			case AV_SAMPLE_FMT_S32:
+				value = (float)reinterpret_cast<const int32_t *>(base)[at] / 2147483648.0f;
+				break;
+			case AV_SAMPLE_FMT_FLT:
+				value = reinterpret_cast<const float *>(base)[at];
+				break;
+			case AV_SAMPLE_FMT_DBL:
+				value = (float)reinterpret_cast<const double *>(base)[at];
+				break;
+			default:
+				return false;
+			}
+			out[(size_t)i * (size_t)channels + (size_t)c] = value;
+		}
+	}
+	return true;
+}
+
+void ReplayPlayer::outputStretched(const AVFrame *frame, double ahead, double speedNow)
+{
+	const int channels = frame->ch_layout.nb_channels;
+	const enum speaker_layout speakers = convertSpeakers(channels);
+	if (speakers == SPEAKERS_UNKNOWN || frame->sample_rate <= 0 || !toInterleavedFloat(frame, stretchIn))
+		return;
+
+	if (!stretching || stretcher.sampleRate() != frame->sample_rate || stretcher.channels() != channels) {
+		stretcher.configure(frame->sample_rate, channels, speedNow);
+		stretchStartNs = os_gettime_ns() + (uint64_t)(std::max(0.0, ahead) * 1e9);
+		stretchFrames = 0;
+		stretching = true;
+	}
+
+	stretchOut.clear();
+	stretcher.push(stretchIn.data(), (size_t)frame->nb_samples, stretchOut);
+	const size_t frames = stretchOut.size() / (size_t)channels;
+	if (!frames)
+		return;
+
+	struct obs_source_audio out = {};
+	out.data[0] = reinterpret_cast<const uint8_t *>(stretchOut.data());
+	out.frames = (uint32_t)frames;
+	out.speakers = speakers;
+	out.format = AUDIO_FORMAT_FLOAT;
+	out.samples_per_sec = (uint32_t)frame->sample_rate;
+	/* stretched audio is continuous: each block follows the last one */
+	out.timestamp = stretchStartNs + (uint64_t)((double)stretchFrames * 1e9 / frame->sample_rate);
+	obs_source_output_audio(obsSource, &out);
+	stretchFrames += frames;
 }
 
 void ReplayPlayer::tick()
@@ -1032,8 +1108,13 @@ void ReplayPlayer::tick()
 	std::vector<QueuedFrame> audioOut;
 	bool started = false;
 	bool ended = false;
+	bool audible = false;
 	double position = 0;
 	double selectedOffset = 0;
+	double speedNow = 1.0;
+	uint64_t gen = 0;
+	int angleNow = 0;
+	SlowAudio slowMode = SlowAudio::Off;
 	const int64_t now = nowUsec();
 
 	{
@@ -1061,8 +1142,11 @@ void ReplayPlayer::tick()
 			ended = true;
 		}
 
-		const bool audible = playAudio && state == PlayerState::Playing && !waitingForFrames &&
-				     std::fabs(speed - 1.0) < 0.001;
+		const bool normalSpeed = std::fabs(speed - 1.0) < 0.001;
+		audible = playAudio && state == PlayerState::Playing && !waitingForFrames &&
+			  (normalSpeed || slowAudio != SlowAudio::Off);
+		/* the stretcher needs ~50 ms of input beyond what it plays */
+		const double lookahead = normalSpeed ? 0.06 : 0.12;
 		for (size_t i = 0; i < decoders.size(); i++) {
 			AngleDecoder *decoder = decoders[i].get();
 			if (!decoder->isOk())
@@ -1075,9 +1159,13 @@ void ReplayPlayer::tick()
 					angleDirty = true;
 			}
 			const bool wanted = audible && (int)i == selected;
-			decoder->popAudioUntil(target + (wanted ? 0.06 : 0.0), generation,
+			decoder->popAudioUntil(target + (wanted ? lookahead : 0.0), generation,
 					       wanted ? &audioOut : nullptr);
 		}
+		speedNow = speed;
+		gen = generation;
+		angleNow = selected;
+		slowMode = slowAudio;
 
 		if (angleDirty && current[(size_t)selected]) {
 			show = current[(size_t)selected];
@@ -1093,11 +1181,26 @@ void ReplayPlayer::tick()
 	if (show)
 		outputVideo(obsSource, show);
 
+	const bool normalSpeed = std::fabs(speedNow - 1.0) < 0.001;
+	const bool stretch = audible && !normalSpeed && slowMode == SlowAudio::Natural;
+	if (!stretch || gen != stretchGeneration || angleNow != stretchAngle || speedNow != stretchSpeed) {
+		/* the next stretched frame starts afresh at the new position */
+		stretching = false;
+		stretchGeneration = gen;
+		stretchAngle = angleNow;
+		stretchSpeed = speedNow;
+	}
+
 	const uint64_t nowNs = os_gettime_ns();
 	for (QueuedFrame &q : audioOut) {
-		double ahead = q.time - selectedOffset - position;
-		uint64_t ts = ahead > 0 ? nowNs + (uint64_t)(ahead * 1e9) : nowNs;
-		outputAudio(obsSource, q.frame, ts);
+		/* file seconds until this frame plays, in real seconds at this speed */
+		const double ahead = (q.time - selectedOffset - position) / speedNow;
+		if (stretch) {
+			outputStretched(q.frame, ahead, speedNow);
+		} else {
+			uint64_t ts = ahead > 0 ? nowNs + (uint64_t)(ahead * 1e9) : nowNs;
+			outputAudio(obsSource, q.frame, ts, normalSpeed ? 1.0 : speedNow);
+		}
 		av_frame_free(&q.frame);
 	}
 

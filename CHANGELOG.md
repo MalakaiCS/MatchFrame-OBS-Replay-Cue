@@ -5,6 +5,42 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
+## [Unreleased]
+
+### Added
+
+- Export reel: the Highlights tab saves a highlights reel as one MP4 in the
+  export folder (e.g. `…_Half-Time-highlights.mp4`), ready for social media.
+  The ticked replays are joined from the selected angle without re-encoding,
+  so it is quick and light on the computer during a broadcast. A clip that
+  cannot be joined (a different camera size or codec) is left out and named.
+  Also the `ExportHighlights` websocket request and `HighlightsExported` event.
+- Automatic highlights: optionally put a break's reel on air by itself when the
+  break is called (Settings → Sport, with a delay, 5 s by default). A replay
+  already on air finishes first and the reel follows straight on; Back to Live
+  cancels a reel that has not started. `SetOptions` takes `autoHighlights`.
+- Slow-motion audio: replays now have sound at every speed. By default it is
+  time-stretched so voices and crowd noise keep their pitch; it can instead be
+  slowed down like tape (lower pitch) or kept silent (Settings → Playback).
+- HDR capture: on an HDR canvas (Rec. 2100 PQ or HLG) cameras are recorded in
+  10-bit HDR with an HEVC or AV1 encoder, and play back in HDR. *Automatic*
+  picks an HEVC/AV1 hardware encoder for an HDR canvas; with an H.264 encoder,
+  or one that refuses 10-bit, the camera is recorded in SDR as before. The dock
+  shows which cameras record HDR.
+
+### Changed
+
+- Recorded and exported files are tagged with their color space (BT.709, or
+  BT.2020 PQ/HLG for HDR), so other players and social sites show them
+  correctly.
+- The "Play audio at 100% speed" setting is now "Play replay audio".
+
+### Fixed
+
+- Two exports started together (two quick presses, or a reel and a replay)
+  could pick the same file name, and the second overwrote the first. Exports
+  now take the next free name (`_2`, `_3`…) when they are written.
+
 ## [1.1.0] - 2026-10-22
 
 ### Added
@@ -82,5 +118,6 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
+[Unreleased]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/compare/1.1.0...HEAD
 [1.1.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.1.0
 [1.0.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.0.0

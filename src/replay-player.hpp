@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "time-stretch.hpp"
+
 #include <obs.h>
 
 #include <atomic>
@@ -40,6 +42,13 @@ struct PlayAngle {
 	double inOffset = 0; /* seconds from the file's first frame to the IN point */
 };
 
+/* What audio does when a replay is not playing at 100% */
+enum class SlowAudio {
+	Off,     /* silent */
+	Natural, /* stretched to the new speed, same pitch */
+	Slowed,  /* played slower and lower, like tape */
+};
+
 struct PlayRequest {
 	std::string eventId;
 	std::string eventName;
@@ -50,6 +59,7 @@ struct PlayRequest {
 	double startAt = 0;
 	bool autoplay = true;
 	bool audio = true;
+	SlowAudio slowAudio = SlowAudio::Natural;
 	bool hwDecode = true;
 };
 
@@ -77,7 +87,7 @@ class AngleDecoder;
  * The "Replay Cue Player" source. Decodes every angle of an event in lockstep
  * on one shared clock and shows the selected one, so switching angles
  * mid-replay is instant and frame-accurate. Slow motion simply runs the clock
- * slower; audio plays only at 100%.
+ * slower; its audio is time-stretched, slowed down, or muted (SlowAudio).
  *
  * All public methods are thread-safe.
  */
@@ -107,6 +117,8 @@ private:
 	void doLoad(const PlayRequest &request);
 	void doStop();
 	void tick();
+	/* ahead: seconds until the frame's first sample is due on the speaker */
+	void outputStretched(const AVFrame *frame, double ahead, double speedNow);
 	double clockLocked(int64_t now) const;
 	void seekLocked(double position);
 
@@ -137,9 +149,22 @@ private:
 	int64_t waitStarted = 0;
 	uint64_t generation = 0;
 	bool playAudio = true;
+	SlowAudio slowAudio = SlowAudio::Natural;
 	bool holdLastFrame = true;
 	bool emitStarted = false;
 	uint64_t framesShown = 0;
+
+	/* slow-motion audio (player thread only): restarted whenever the
+	 * playback it follows jumps (seek, angle, speed, pause) */
+	TimeStretcher stretcher;
+	bool stretching = false;
+	uint64_t stretchGeneration = 0;
+	int stretchAngle = -1;
+	double stretchSpeed = 0;
+	uint64_t stretchStartNs = 0; /* when the first stretched sample plays */
+	uint64_t stretchFrames = 0;  /* stretched frames output since then */
+	std::vector<float> stretchIn;
+	std::vector<float> stretchOut;
 };
 
 void registerPlayerSource();

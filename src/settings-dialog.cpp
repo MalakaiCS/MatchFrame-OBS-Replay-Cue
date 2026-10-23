@@ -363,6 +363,11 @@ QWidget *SettingsDialog::buildCaptureTab()
 	selectData(audioTrack, initial.audioTrack);
 	form->addRow(T("Settings.Audio"), audioTrack);
 
+	captureHdr = new QCheckBox(T("Settings.CaptureHdr"), page);
+	captureHdr->setChecked(initial.captureHdr);
+	captureHdr->setToolTip(T("Settings.CaptureHdrTip"));
+	form->addRow(captureHdr);
+
 	memoryLabel = new QLabel(page);
 	memoryLabel->setWordWrap(true);
 	form->addRow(memoryLabel);
@@ -486,6 +491,15 @@ QWidget *SettingsDialog::buildPlaybackTab()
 	playAudio = new QCheckBox(T("Settings.PlayAudio"), page);
 	playAudio->setChecked(initial.playAudio);
 	form->addRow(playAudio);
+	slowMotionAudio = new QComboBox(page);
+	slowMotionAudio->addItem(T("Settings.SlowAudioNatural"), QStringLiteral("natural"));
+	slowMotionAudio->addItem(T("Settings.SlowAudioSlowed"), QStringLiteral("slowed"));
+	slowMotionAudio->addItem(T("Settings.SlowAudioOff"), QStringLiteral("off"));
+	selectData(slowMotionAudio, qs(initial.slowMotionAudio));
+	slowMotionAudio->setToolTip(T("Settings.SlowAudioTip"));
+	form->addRow(T("Settings.SlowAudio"), slowMotionAudio);
+	connect(playAudio, &QCheckBox::toggled, slowMotionAudio, &QComboBox::setEnabled);
+	slowMotionAudio->setEnabled(initial.playAudio);
 	hwDecode = new QCheckBox(T("Settings.HwDecode"), page);
 	hwDecode->setChecked(initial.hwDecode);
 	form->addRow(hwDecode);
@@ -527,6 +541,24 @@ QWidget *SettingsDialog::buildSportTab()
 	loopHighlights->setChecked(initial.loopHighlights);
 	form->addRow(loopHighlights);
 
+	auto *autoRow = new QWidget(page);
+	auto *autoLayout = new QHBoxLayout(autoRow);
+	autoLayout->setContentsMargins(0, 0, 0, 0);
+	autoHighlights = new QCheckBox(T("Settings.AutoHighlights"), autoRow);
+	autoHighlights->setChecked(initial.autoHighlights);
+	autoHighlights->setToolTip(T("Settings.AutoHighlightsTip"));
+	autoHighlightsDelay = new QSpinBox(autoRow);
+	autoHighlightsDelay->setRange(0, 120);
+	autoHighlightsDelay->setPrefix(T("Settings.AutoHighlightsAfter"));
+	autoHighlightsDelay->setSuffix(" s");
+	autoHighlightsDelay->setValue(initial.autoHighlightsDelay);
+	autoHighlightsDelay->setEnabled(initial.autoHighlights);
+	autoLayout->addWidget(autoHighlights);
+	autoLayout->addWidget(autoHighlightsDelay);
+	autoLayout->addStretch(1);
+	form->addRow(autoRow);
+	connect(autoHighlights, &QCheckBox::toggled, autoHighlightsDelay, &QSpinBox::setEnabled);
+
 	auto *highlightsHelp = new QLabel(T("Settings.HighlightsHelp"), page);
 	highlightsHelp->setWordWrap(true);
 	form->addRow(highlightsHelp);
@@ -566,6 +598,7 @@ Config SettingsDialog::result() const
 	cfg.keyintSec = keyint->value();
 	cfg.maxHeight = maxHeight->currentData().toInt();
 	cfg.audioTrack = audioTrack->currentData().toInt();
+	cfg.captureHdr = captureHdr->isChecked();
 
 	cfg.folder = folder->text().trimmed().toStdString();
 	if (cfg.folder.empty())
@@ -596,6 +629,7 @@ Config SettingsDialog::result() const
 	cfg.returnToLive = returnToLive->isChecked();
 	cfg.startCuedOnLive = startCuedOnLive->isChecked();
 	cfg.playAudio = playAudio->isChecked();
+	cfg.slowMotionAudio = slowMotionAudio->currentData().toString().toStdString();
 	cfg.hwDecode = hwDecode->isChecked();
 
 	cfg.sport = sport->currentData().toString().toStdString();
@@ -603,6 +637,8 @@ Config SettingsDialog::result() const
 	cfg.highlightsScene = highlightsScene->text().trimmed().toStdString();
 	cfg.highlightsSpeed = highlightsSpeed->currentData().toDouble();
 	cfg.loopHighlights = loopHighlights->isChecked();
+	cfg.autoHighlights = autoHighlights->isChecked();
+	cfg.autoHighlightsDelay = autoHighlightsDelay->value();
 	return cfg;
 }
 

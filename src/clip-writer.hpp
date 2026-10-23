@@ -76,17 +76,35 @@ bool writeClipFile(const std::string &path, const PacketList &video, const Packe
  * the front). Starts on the keyframe at or before `start`. */
 bool exportClip(const ExportItem &item, std::string &error);
 
+/* Joins the segments, one after another, into one web-friendly MP4 without
+ * re-encoding. Segments whose codec, size or audio differ from the first
+ * readable one cannot share its stream: their indexes go to `skipped`.
+ * `output` is the wanted path; if a file already has that name it becomes the
+ * path actually written (name_2.mp4, ...). Nothing is left behind on failure. */
+bool exportReel(const std::vector<ExportItem> &segments, std::string &output, std::vector<size_t> &skipped,
+		double &duration, std::string &error);
+
+struct ReelResult {
+	bool ok = false;
+	std::string error;
+	std::string output;
+	std::vector<size_t> skipped; /* segment indexes left out */
+	double duration = 0;
+};
+
 /* Single background thread that writes clips and exports in order. */
 class ClipWriter {
 public:
 	using ClipCallback = std::function<void(ClipResult)>;
 	using ExportCallback = std::function<void(bool ok, std::string message)>;
+	using ReelCallback = std::function<void(ReelResult result)>;
 
 	explicit ClipWriter(ClipCallback onClip);
 	~ClipWriter();
 
 	void enqueue(ClipJob job);
 	void enqueueExport(std::vector<ExportItem> items, ExportCallback done);
+	void enqueueReel(std::vector<ExportItem> segments, std::string output, ReelCallback done);
 
 private:
 	void run();

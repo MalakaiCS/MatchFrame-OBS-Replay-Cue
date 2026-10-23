@@ -36,6 +36,7 @@ struct CaptureSettings {
 	int maxHeight = 1080; /* 0: keep the source's own size */
 	int bufferSeconds = 120;
 	int audioTrack = 1; /* 0: no audio, 1-6: OBS mixer track */
+	bool hdr = true;    /* 10-bit HDR when the canvas is HDR and the encoder supports it */
 };
 
 struct AngleSpec {
@@ -52,6 +53,7 @@ struct AngleStatus {
 	size_t bytes = 0;
 	uint32_t width = 0;
 	uint32_t height = 0;
+	bool hdr = false;
 };
 
 /* Renders one OBS source off-screen, encodes it and keeps the last N seconds
@@ -86,6 +88,8 @@ private:
 	uint32_t baseHeight = 0;
 	uint32_t outWidth = 0;
 	uint32_t outHeight = 0;
+	bool hdr = false;         /* recording 10-bit HDR right now */
+	bool hdrRejected = false; /* the encoder refused 10-bit: stay SDR */
 	std::string state;
 	int64_t retryAfterUsec = 0;
 };
@@ -131,7 +135,10 @@ public:
 
 	static std::vector<std::pair<std::string, std::string>> availableVideoEncoders();
 	static std::string defaultVideoEncoder();
-	static std::string resolveVideoEncoder(const std::string &preferred);
+	static std::string defaultHdrEncoder(); /* empty if no HEVC/AV1 hardware encoder */
+	/* hdr: the canvas is HDR, so "automatic" prefers an encoder that can keep it */
+	static std::string resolveVideoEncoder(const std::string &preferred, bool hdr = false);
+	static bool encoderSupportsHdr(const std::string &id);
 
 private:
 	bool isArmed = false;

@@ -18,6 +18,7 @@ set(
   src/replay-player.cpp
   src/settings-dialog.cpp
   src/sport.cpp
+  src/time-stretch.cpp
   src/websocket-api.cpp
 )
 
@@ -38,6 +39,7 @@ set(
   src/replay-player.hpp
   src/settings-dialog.hpp
   src/sport.hpp
+  src/time-stretch.hpp
   src/third-party/obs-websocket-api.h
   src/websocket-api.hpp
 )

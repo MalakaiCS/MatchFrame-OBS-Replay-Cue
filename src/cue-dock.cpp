@@ -448,13 +448,16 @@ void CueDock::updateCapture()
 		for (const AngleStatus &a : controller->captureStatus()) {
 			const bool live = a.running && a.bufferedSeconds > 0;
 			const char *color = live ? "#43a047" : a.running ? "#fdd835" : "#9e9e9e";
-			const QString info = a.running ? QString("%1s").arg((int)a.bufferedSeconds) : qs(a.state);
+			const QString hdr = a.hdr ? QStringLiteral(" HDR") : QString();
+			const QString info = a.running ? QString("%1s%2").arg((int)a.bufferedSeconds).arg(hdr)
+						       : qs(a.state);
 			chips << QString("<span style='color:%1'>&#9679;</span>&nbsp;%2&nbsp;<small>%3</small>")
 					 .arg(color, qs(a.label).toHtmlEscaped(), info.toHtmlEscaped());
-			details << QString("%1: %2 (%3) %4x%5")
+			details << QString("%1: %2 (%3) %4x%5%6")
 					   .arg(qs(a.label), qs(a.sourceName), qs(a.state))
 					   .arg(a.width)
-					   .arg(a.height);
+					   .arg(a.height)
+					   .arg(hdr);
 			bytes += a.bytes;
 		}
 		details << QString(T("Dock.Memory")).arg(bytes / (1024.0 * 1024.0), 0, 'f', 0);

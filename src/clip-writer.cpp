@@ -80,6 +80,110 @@ void removeQuietly(const std::string &path)
 	fs::remove(fs::u8path(path), ec);
 }
 
+/* Tags the file with the canvas color space so players (and the Replay Cue
+ * Player) show SDR and HDR replays correctly. */
+void setColorTags(AVCodecParameters *par, const StreamInfo &info)
+{
+	switch (info.colorspace) {
+	case VIDEO_CS_601:
+		par->color_primaries = AVCOL_PRI_SMPTE170M;
+		par->color_trc = AVCOL_TRC_SMPTE170M;
+		par->color_space = AVCOL_SPC_SMPTE170M;
+		break;
+	case VIDEO_CS_SRGB:
+		par->color_primaries = AVCOL_PRI_BT709;
+		par->color_trc = AVCOL_TRC_IEC61966_2_1;
+		par->color_space = AVCOL_SPC_BT709;
+		break;
+	case VIDEO_CS_2100_PQ:
+		par->color_primaries = AVCOL_PRI_BT2020;
+		par->color_trc = AVCOL_TRC_SMPTE2084;
+		par->color_space = AVCOL_SPC_BT2020_NCL;
+		break;
+	case VIDEO_CS_2100_HLG:
+		par->color_primaries = AVCOL_PRI_BT2020;
+		par->color_trc = AVCOL_TRC_ARIB_STD_B67;
+		par->color_space = AVCOL_SPC_BT2020_NCL;
+		break;
+	case VIDEO_CS_DEFAULT:
+	case VIDEO_CS_709:
+	default:
+		par->color_primaries = AVCOL_PRI_BT709;
+		par->color_trc = AVCOL_TRC_BT709;
+		par->color_space = AVCOL_SPC_BT709;
+		break;
+	}
+	par->color_range = info.fullRange ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+}
+
+struct InputFile {
+	AVFormatContext *ctx = nullptr;
+	~InputFile() { avformat_close_input(&ctx); }
+};
+
+/* Exports run one at a time on the writer thread, so picking the name here
+ * (not when the export was queued) cannot clash with another export. */
+std::string freePath(const std::string &wanted)
+{
+	std::error_code ec;
+	if (!fs::exists(fs::u8path(wanted), ec))
+		return wanted;
+	const size_t dot = wanted.find_last_of('.');
+	const size_t slash = wanted.find_last_of("/\\");
+	const bool hasExt = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+	const std::string base = hasExt ? wanted.substr(0, dot) : wanted;
+	const std::string ext = hasExt ? wanted.substr(dot) : std::string();
+	for (int n = 2;; n++) {
+		std::string candidate = base + "_" + std::to_string(n) + ext;
+		if (!fs::exists(fs::u8path(candidate), ec))
+			return candidate;
+	}
+}
+
+/* Deletes a half-written file; declared before the OutputFile so the file is
+ * closed first. */
+struct RemoveUnlessKept {
+	std::string path;
+	bool keep = false;
+	~RemoveUnlessKept()
+	{
+		if (!keep && !path.empty())
+			removeQuietly(path);
+	}
+};
+
+bool sameExtradata(const AVCodecParameters *a, const AVCodecParameters *b)
+{
+	return a->extradata_size == b->extradata_size &&
+	       (a->extradata_size == 0 || memcmp(a->extradata, b->extradata, (size_t)a->extradata_size) == 0);
+}
+
+/* Packets can only be joined into one stream when the decoder setup is the
+ * same: same codec, size and parameter sets (SPS/PPS). */
+bool sameVideo(const AVCodecParameters *a, const AVCodecParameters *b)
+{
+	return a->codec_id == b->codec_id && a->width == b->width && a->height == b->height && sameExtradata(a, b);
+}
+
+bool sameAudio(const AVCodecParameters *a, const AVCodecParameters *b)
+{
+	return a->codec_id == b->codec_id && a->sample_rate == b->sample_rate &&
+	       a->ch_layout.nb_channels == b->ch_layout.nb_channels && sameExtradata(a, b);
+}
+
+AVStream *addStreamLike(AVFormatContext *out, const AVStream *ist)
+{
+	AVStream *ost = avformat_new_stream(out, nullptr);
+	if (!ost || avcodec_parameters_copy(ost->codecpar, ist->codecpar) < 0)
+		return nullptr;
+	ost->codecpar->codec_tag = 0;
+	if (ost->codecpar->codec_id == AV_CODEC_ID_HEVC)
+		ost->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+	ost->time_base = ist->time_base;
+	ost->avg_frame_rate = ist->avg_frame_rate;
+	return ost;
+}
+
 } // namespace
 
 bool writeClipFile(const std::string &path, const PacketList &video, const PacketList *audio, int64_t &firstFrameUsec,
@@ -133,6 +237,7 @@ bool writeClipFile(const std::string &path, const PacketList &video, const Packe
 	vp->height = (int)vi.height;
 	if (videoCodec == AV_CODEC_ID_HEVC)
 		vp->codec_tag = MKTAG('h', 'v', 'c', '1'); /* plays in QuickTime and on phones */
+	setColorTags(vp, vi);
 	if (!setExtradata(vp, vi.extradata)) {
 		error = "out of memory";
 		return false;
@@ -239,143 +344,196 @@ bool writeClipFile(const std::string &path, const PacketList &video, const Packe
 	return true;
 }
 
-bool exportClip(const ExportItem &item, std::string &error)
+bool exportReel(const std::vector<ExportItem> &segments, std::string &output, std::vector<size_t> &skipped,
+		double &duration, std::string &error)
 {
+	skipped.clear();
+	duration = 0;
 	if (!ffmpegReady()) {
 		error = "FFmpeg libraries are not compatible with this OBS version";
 		return false;
 	}
-
-	AVFormatContext *in = nullptr;
-	int ret = avformat_open_input(&in, item.input.c_str(), nullptr, nullptr);
-	if (ret < 0) {
-		error = "could not open " + item.input + ": " + averr(ret);
-		return false;
-	}
-	struct InputCloser {
-		AVFormatContext **ctx;
-		~InputCloser() { avformat_close_input(ctx); }
-	} closeIn{&in};
-
-	if ((ret = avformat_find_stream_info(in, nullptr)) < 0) {
-		error = "could not read " + item.input + ": " + averr(ret);
-		return false;
-	}
-
-	const int vidx = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-	const int aidx = av_find_best_stream(in, AVMEDIA_TYPE_AUDIO, -1, vidx, nullptr, 0);
-	if (vidx < 0) {
-		error = item.input + " has no video";
+	if (segments.empty()) {
+		error = "nothing to export";
 		return false;
 	}
 
 	std::error_code ec;
-	fs::create_directories(fs::u8path(dirNameOf(item.output)), ec);
+	fs::create_directories(fs::u8path(dirNameOf(output)), ec);
 
+	/* the final name must be known up front: +faststart re-reads the file
+	 * by the muxer's own name when it moves the index to the front */
+	output = freePath(output);
+	RemoveUnlessKept cleanup;
 	OutputFile out;
-	ret = avformat_alloc_output_context2(&out.ctx, nullptr, "mp4", item.output.c_str());
+	int ret = avformat_alloc_output_context2(&out.ctx, nullptr, "mp4", output.c_str());
 	if (ret < 0 || !out.ctx) {
 		error = "could not create MP4 muxer: " + averr(ret);
 		return false;
 	}
 
-	std::vector<int> mapping(in->nb_streams, -1);
-	for (int idx : {vidx, aidx}) {
-		if (idx < 0)
-			continue;
-		AVStream *ist = in->streams[idx];
-		AVStream *ost = avformat_new_stream(out.ctx, nullptr);
-		if (!ost || avcodec_parameters_copy(ost->codecpar, ist->codecpar) < 0) {
-			error = "could not copy stream parameters";
-			return false;
-		}
-		ost->codecpar->codec_tag = 0;
-		if (ost->codecpar->codec_id == AV_CODEC_ID_HEVC)
-			ost->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
-		ost->time_base = ist->time_base;
-		ost->avg_frame_rate = ist->avg_frame_rate;
-		mapping[idx] = ost->index;
-	}
+	AVStream *vout = nullptr;
+	AVStream *aout = nullptr;
+	int64_t baseUs = 0; /* where the next segment starts in the output */
+	int64_t lastVideoDts = std::numeric_limits<int64_t>::min();
+	int64_t lastAudioDts = std::numeric_limits<int64_t>::min();
+	size_t written = 0;
+	std::string firstError;
 
-	ret = avio_open(&out.ctx->pb, item.output.c_str(), AVIO_FLAG_WRITE);
-	if (ret < 0) {
-		error = "could not create " + item.output + ": " + averr(ret);
-		return false;
-	}
-	AVDictionary *opts = nullptr;
-	av_dict_set(&opts, "movflags", "+faststart", 0);
-	ret = avformat_write_header(out.ctx, &opts);
-	av_dict_free(&opts);
-	if (ret < 0) {
-		error = "could not write MP4 header: " + averr(ret);
-		return false;
-	}
-	out.headerWritten = true;
-
-	AVStream *vst = in->streams[vidx];
-	const int64_t originUs =
-		vst->start_time != AV_NOPTS_VALUE ? av_rescale_q(vst->start_time, vst->time_base, kMicros) : 0;
-	const int64_t startUs = originUs + (int64_t)(item.start * 1e6);
-	const bool bounded = item.end > item.start;
-	const int64_t endUs = originUs + (int64_t)(item.end * 1e6);
-
-	if (item.start > 0)
-		av_seek_frame(in, vidx, av_rescale_q(startUs, kMicros, vst->time_base), AVSEEK_FLAG_BACKWARD);
-
-	AVPacket *pkt = av_packet_alloc();
-	int64_t offsetUs = AV_NOPTS_VALUE;
-	bool videoDone = false;
-	bool audioDone = aidx < 0;
-	while (!(videoDone && audioDone) && av_read_frame(in, pkt) >= 0) {
-		const int target = pkt->stream_index < (int)mapping.size() ? mapping[pkt->stream_index] : -1;
-		if (target < 0 || (pkt->pts == AV_NOPTS_VALUE && pkt->dts == AV_NOPTS_VALUE)) {
-			av_packet_unref(pkt);
+	for (size_t s = 0; s < segments.size(); s++) {
+		const ExportItem &item = segments[s];
+		InputFile in;
+		ret = avformat_open_input(&in.ctx, item.input.c_str(), nullptr, nullptr);
+		if (ret >= 0)
+			ret = avformat_find_stream_info(in.ctx, nullptr);
+		const int vidx = ret >= 0 ? av_find_best_stream(in.ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
+		if (vidx < 0) {
+			if (firstError.empty())
+				firstError = ret < 0 ? "could not read " + item.input + ": " + averr(ret)
+						     : item.input + " has no video";
+			skipped.push_back(s);
 			continue;
 		}
+		const int aidx = av_find_best_stream(in.ctx, AVMEDIA_TYPE_AUDIO, -1, vidx, nullptr, 0);
+		AVStream *vin = in.ctx->streams[vidx];
+		AVStream *ain = aidx >= 0 ? in.ctx->streams[aidx] : nullptr;
 
-		AVStream *ist = in->streams[pkt->stream_index];
-		AVStream *ost = out.ctx->streams[target];
-		const bool isVideo = pkt->stream_index == vidx;
-		const int64_t ptsUs =
-			av_rescale_q(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts, ist->time_base, kMicros);
-		const int64_t dtsUs =
-			av_rescale_q(pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts, ist->time_base, kMicros);
+		if (!vout) {
+			/* the first readable segment sets up the file */
+			vout = addStreamLike(out.ctx, vin);
+			aout = ain ? addStreamLike(out.ctx, ain) : nullptr;
+			if (!vout || (ain && !aout)) {
+				error = "could not copy stream parameters";
+				return false;
+			}
+			ret = avio_open(&out.ctx->pb, output.c_str(), AVIO_FLAG_WRITE);
+			if (ret < 0) {
+				error = "could not create " + output + ": " + averr(ret);
+				return false;
+			}
+			cleanup.path = output;
+			AVDictionary *opts = nullptr;
+			av_dict_set(&opts, "movflags", "+faststart", 0);
+			ret = avformat_write_header(out.ctx, &opts);
+			av_dict_free(&opts);
+			if (ret < 0) {
+				error = "could not write MP4 header: " + averr(ret);
+				return false;
+			}
+			out.headerWritten = true;
+		} else if (!sameVideo(vin->codecpar, vout->codecpar) || (ain != nullptr) != (aout != nullptr) ||
+			   (ain && !sameAudio(ain->codecpar, aout->codecpar))) {
+			if (firstError.empty())
+				firstError = item.input + " does not match the other clips";
+			skipped.push_back(s);
+			continue;
+		}
 
-		if (offsetUs == AV_NOPTS_VALUE) {
-			/* start at the first video packet: a backward seek lands on a
-			 * keyframe, but the MP4 demuxer does not always flag it as one */
-			if (!isVideo) {
+		const int64_t originUs =
+			vin->start_time != AV_NOPTS_VALUE ? av_rescale_q(vin->start_time, vin->time_base, kMicros) : 0;
+		const int64_t startUs = originUs + (int64_t)(item.start * 1e6);
+		const bool bounded = item.end > item.start;
+		const int64_t endUs = originUs + (int64_t)(item.end * 1e6);
+		if (item.start > 0)
+			av_seek_frame(in.ctx, vidx, av_rescale_q(startUs, kMicros, vin->time_base),
+				      AVSEEK_FLAG_BACKWARD);
+
+		AVPacket *pkt = av_packet_alloc();
+		int64_t offsetUs = AV_NOPTS_VALUE;
+		int64_t segmentUs = 0; /* length of this segment's video */
+		bool videoDone = false;
+		bool audioDone = !ain;
+		while (!(videoDone && audioDone) && av_read_frame(in.ctx, pkt) >= 0) {
+			const bool isVideo = pkt->stream_index == vidx;
+			const bool isAudio = ain && pkt->stream_index == aidx;
+			if ((!isVideo && !isAudio) || (pkt->pts == AV_NOPTS_VALUE && pkt->dts == AV_NOPTS_VALUE)) {
 				av_packet_unref(pkt);
 				continue;
 			}
-			offsetUs = dtsUs;
-		}
 
-		if (bounded && ptsUs > endUs) {
-			(isVideo ? videoDone : audioDone) = true;
-			av_packet_unref(pkt);
+			AVStream *ist = in.ctx->streams[pkt->stream_index];
+			AVStream *ost = isVideo ? vout : aout;
+			const int64_t ptsUs =
+				av_rescale_q(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts, ist->time_base, kMicros);
+			const int64_t dtsUs =
+				av_rescale_q(pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts, ist->time_base, kMicros);
+
+			if (offsetUs == AV_NOPTS_VALUE) {
+				/* start at the first video packet: a backward seek lands on a
+				 * keyframe, but the MP4 demuxer does not always flag it as one */
+				if (!isVideo) {
+					av_packet_unref(pkt);
+					continue;
+				}
+				offsetUs = dtsUs;
+			}
+
+			if (bounded && ptsUs > endUs) {
+				(isVideo ? videoDone : audioDone) = true;
+				av_packet_unref(pkt);
+				continue;
+			}
+			if (ptsUs < offsetUs) {
+				av_packet_unref(pkt);
+				continue;
+			}
+
+			if (isVideo)
+				segmentUs = std::max(
+					segmentUs, ptsUs - offsetUs +
+							   std::max<int64_t>(1, av_rescale_q(pkt->duration,
+											     ist->time_base, kMicros)));
+			pkt->pts = av_rescale_q(ptsUs - offsetUs + baseUs, kMicros, ost->time_base);
+			pkt->dts = av_rescale_q(dtsUs - offsetUs + baseUs, kMicros, ost->time_base);
+			int64_t &lastDts = isVideo ? lastVideoDts : lastAudioDts;
+			if (pkt->dts <= lastDts) {
+				if (!isVideo) {
+					/* audio running past the previous clip's last frame */
+					av_packet_unref(pkt);
+					continue;
+				}
+				const int64_t shift = lastDts + 1 - pkt->dts;
+				pkt->dts += shift;
+				pkt->pts += shift;
+			}
+			lastDts = pkt->dts;
+			pkt->duration = av_rescale_q(pkt->duration, ist->time_base, ost->time_base);
+			pkt->pos = -1;
+			pkt->stream_index = ost->index;
+			ret = av_interleaved_write_frame(out.ctx, pkt);
+			if (ret < 0) {
+				av_packet_free(&pkt);
+				error = "could not write " + output + ": " + averr(ret);
+				return false;
+			}
+		}
+		av_packet_free(&pkt);
+
+		if (offsetUs == AV_NOPTS_VALUE) {
+			if (firstError.empty())
+				firstError = item.input + " has no video in that range";
+			skipped.push_back(s);
 			continue;
 		}
-		if (ptsUs < offsetUs) {
-			av_packet_unref(pkt);
-			continue;
-		}
-
-		pkt->pts = av_rescale_q(ptsUs - offsetUs, kMicros, ost->time_base);
-		pkt->dts = av_rescale_q(dtsUs - offsetUs, kMicros, ost->time_base);
-		pkt->duration = av_rescale_q(pkt->duration, ist->time_base, ost->time_base);
-		pkt->pos = -1;
-		pkt->stream_index = target;
-		ret = av_interleaved_write_frame(out.ctx, pkt);
-		if (ret < 0) {
-			av_packet_free(&pkt);
-			error = "could not write " + item.output + ": " + averr(ret);
-			return false;
-		}
+		baseUs += segmentUs;
+		written++;
 	}
-	av_packet_free(&pkt);
 
-	return out.finish(error);
+	if (!written) {
+		error = firstError.empty() ? "nothing could be exported" : firstError;
+		return false;
+	}
+	duration = (double)baseUs / 1e6;
+	cleanup.keep = out.finish(error);
+	return cleanup.keep;
+}
+
+bool exportClip(const ExportItem &item, std::string &error)
+{
+	std::vector<size_t> skipped;
+	double duration = 0;
+	std::string output = item.output;
+	return exportReel({item}, output, skipped, duration, error);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -431,12 +589,10 @@ void ClipWriter::enqueueExport(std::vector<ExportItem> items, ExportCallback don
 			size_t written = 0;
 			for (const ExportItem &item : items) {
 				std::string err;
-				if (exportClip(item, err)) {
+				if (exportClip(item, err))
 					written++;
-				} else {
-					removeQuietly(item.output);
+				else
 					errors += err + "\n";
-				}
 			}
 			if (done) {
 				if (errors.empty())
@@ -446,6 +602,21 @@ void ClipWriter::enqueueExport(std::vector<ExportItem> items, ExportCallback don
 				else
 					done(false, errors);
 			}
+		});
+	}
+	cv.notify_one();
+}
+
+void ClipWriter::enqueueReel(std::vector<ExportItem> segments, std::string output, ReelCallback done)
+{
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		tasks.push_back([segments, output, done]() {
+			ReelResult result;
+			result.output = output;
+			result.ok = exportReel(segments, result.output, result.skipped, result.duration, result.error);
+			if (done)
+				done(std::move(result));
 		});
 	}
 	cv.notify_one();

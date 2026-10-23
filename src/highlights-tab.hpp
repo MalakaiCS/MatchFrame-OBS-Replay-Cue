@@ -79,6 +79,7 @@ private:
 	QLabel *hintLabel;
 	QPushButton *playButton;
 	QCheckBox *loopCheck;
+	QPushButton *exportButton;
 
 	std::string sportId;
 	std::string lastPlaying;

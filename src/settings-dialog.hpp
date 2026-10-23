@@ -63,6 +63,7 @@ private:
 	QSpinBox *keyint = nullptr;
 	QComboBox *maxHeight = nullptr;
 	QComboBox *audioTrack = nullptr;
+	QCheckBox *captureHdr = nullptr;
 	QLabel *memoryLabel = nullptr;
 
 	QLineEdit *folder = nullptr;
@@ -84,6 +85,7 @@ private:
 	QCheckBox *cycleAngles = nullptr;
 	QCheckBox *returnToLive = nullptr;
 	QCheckBox *playAudio = nullptr;
+	QComboBox *slowMotionAudio = nullptr;
 	QCheckBox *hwDecode = nullptr;
 	QCheckBox *startCuedOnLive = nullptr;
 
@@ -92,6 +94,8 @@ private:
 	QLineEdit *highlightsScene = nullptr;
 	QComboBox *highlightsSpeed = nullptr;
 	QCheckBox *loopHighlights = nullptr;
+	QCheckBox *autoHighlights = nullptr;
+	QSpinBox *autoHighlightsDelay = nullptr;
 };
 
 } // namespace rc
