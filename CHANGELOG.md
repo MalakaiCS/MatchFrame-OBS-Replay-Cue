@@ -5,6 +5,24 @@ All notable changes to Replay Cue are listed here. The format follows
 [Semantic Versioning](https://semver.org/). The section for a tagged version
 becomes the notes of its GitHub release.
 
+## [Unreleased]
+
+### Added
+
+- Clean feed recording: records one scene (for example *Live*: the camera with
+  its graphics) on its own, apart from the programme, so the replays cut into
+  the stream are not in it. It keeps recording while a replay is on air.
+  Settings → Clean feed picks the scene and when it records: with the match
+  (*Start 1st Half* to *Full Time*, one file per match, carrying on after an
+  OBS restart), while the cameras are armed, or only with the new **● REC**
+  button in the dock. Files go into the match's `Recordings` folder
+  (`Match 1 - Leeds vs York - Clean feed.mkv`), as MKV or fragmented MP4.
+- The clean feed records an OBS audio track (track 2 by default) and can leave
+  the replay sound out by taking the Replay Cue Player off that track.
+- A *Start / stop clean feed recording* hotkey, the obs-websocket requests
+  `StartCleanFeed` and `StopCleanFeed`, the `CleanFeedStarted` and
+  `CleanFeedStopped` events, and `clean_feed` in `GetStatus`.
+
 ## [1.3.0] - 2026-10-23
 
 ### Added
@@ -150,6 +168,7 @@ First release of Replay Cue: multi-angle instant replay inside OBS Studio.
 - HDR canvases are captured as SDR (Rec. 709).
 - Replays play audio only at 100% speed; slow motion is silent.
 
+[Unreleased]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/compare/1.3.0...HEAD
 [1.3.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.3.0
 [1.2.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.2.0
 [1.1.0]: https://github.com/MalakaiCS/MatchFrame-OBS-Replay-Cue/releases/tag/1.1.0

@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include "capture-engine.hpp"
+#include "clean-feed.hpp"
 #include "clip-writer.hpp"
 #include "match.hpp"
 #include "replay-config.hpp"
@@ -99,6 +100,11 @@ public:
 	bool highlightsPlaying() const { return highlightSession && !playingId.empty(); }
 	int playingReel() const { return highlightReel; }
 
+	/* clean feed recording */
+	bool cleanFeedRecording() const { return cleanFeed.recording(); }
+	QString cleanFeedFile() const { return QString::fromStdString(cleanFeed.file()); }
+	double cleanFeedSeconds() const { return cleanFeed.seconds(); }
+
 	/* thread-safe copies for obs-websocket (caller releases) */
 	obs_data_t *statusSnapshot();
 	obs_data_t *eventsSnapshot();
@@ -168,6 +174,10 @@ public slots:
 	void toggleHighlight(const QString &id);
 	void setEventPeriod(const QString &id, int period);
 
+	void startCleanFeed();
+	void stopCleanFeed();
+	void toggleCleanFeed();
+
 signals:
 	void eventsChanged();
 	void selectionChanged(const QString &id);
@@ -214,6 +224,10 @@ private:
 	int highestNumber() const; /* of the open match's replays */
 	/* where new replays are written: the open match's folder, or the replay folder */
 	std::string replayFolder() const;
+	std::string cleanFeedPath() const;
+	void keepReplaySoundOut(obs_source_t *player);
+	void cleanFeedFollowsMatch(); /* another match is open */
+	bool cleanFeedWanted() const; /* its start setting says it should be recording now */
 	void prepareNextInReel();
 	void checkPreparedNext();
 	void onPlayerAdvanced(const PlayerStatus &status);
@@ -269,6 +283,10 @@ private:
 	int highlightReel = 0;
 	std::string preparedNextId; /* the reel's next replay, set up in the player to fade into */
 	uint64_t playerFades = 0;   /* PlayerStatus::fades last seen */
+
+	/* clean feed */
+	CleanFeedRecorder cleanFeed;
+	bool cleanFeedBeforeCollectionChange = false;
 
 	/* matches */
 	MatchInfo match;                  /* the open one (id empty: none) */

@@ -42,6 +42,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 
 namespace rc {
 
@@ -165,6 +166,7 @@ SettingsDialog::SettingsDialog(const Config &config, QWidget *parent) : QDialog(
 	tabs->addTab(buildReplaysTab(), T("Settings.TabReplays"));
 	tabs->addTab(buildPlaybackTab(), T("Settings.TabPlayback"));
 	tabs->addTab(buildSportTab(), T("Settings.TabSport"));
+	tabs->addTab(buildCleanFeedTab(), T("Settings.TabCleanFeed"));
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 	connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -508,6 +510,85 @@ QWidget *SettingsDialog::buildPlaybackTab()
 	return page;
 }
 
+QWidget *SettingsDialog::buildCleanFeedTab()
+{
+	auto *page = new QWidget(this);
+	auto *form = new QFormLayout(page);
+	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+	auto *help = new QLabel(T("Settings.CleanFeedHelp"), page);
+	help->setWordWrap(true);
+	form->addRow(help);
+
+	/* any scene but the ones replays play on */
+	cleanFeedScene = new QComboBox(page);
+	cleanFeedScene->addItem(T("Settings.CleanFeedOff"), QString());
+	char **names = obs_frontend_get_scene_names();
+	for (char **n = names; n && *n; n++) {
+		const QString name = QString::fromUtf8(*n);
+		if (name != qs(initial.sceneName) && name != qs(initial.highlightsScene))
+			cleanFeedScene->addItem(name, name);
+	}
+	bfree(names);
+	if (!initial.cleanFeedScene.empty() && cleanFeedScene->findData(qs(initial.cleanFeedScene)) < 0)
+		cleanFeedScene->addItem(qs(initial.cleanFeedScene), qs(initial.cleanFeedScene));
+	selectData(cleanFeedScene, qs(initial.cleanFeedScene));
+	form->addRow(T("Settings.CleanFeedScene"), cleanFeedScene);
+
+	cleanFeedStart = new QComboBox(page);
+	cleanFeedStart->addItem(T("Settings.CleanFeedWithMatch"), QStringLiteral("match"));
+	cleanFeedStart->addItem(T("Settings.CleanFeedWhileArmed"), QStringLiteral("armed"));
+	cleanFeedStart->addItem(T("Settings.CleanFeedManual"), QStringLiteral("manual"));
+	selectData(cleanFeedStart, qs(initial.cleanFeedStart));
+	form->addRow(T("Settings.CleanFeedStart"), cleanFeedStart);
+
+	cleanFeedTrack = new QComboBox(page);
+	cleanFeedTrack->addItem(T("Settings.NoAudio"), 0);
+	for (int t = 1; t <= 6; t++)
+		cleanFeedTrack->addItem(QString(T("Settings.Track")).arg(t), t);
+	selectData(cleanFeedTrack, initial.cleanFeedTrack);
+	cleanFeedTrack->setToolTip(T("Settings.CleanFeedTrackTip"));
+	form->addRow(T("Settings.Audio"), cleanFeedTrack);
+
+	cleanFeedNoReplaySound = new QCheckBox(T("Settings.CleanFeedNoReplaySound"), page);
+	cleanFeedNoReplaySound->setChecked(initial.cleanFeedNoReplaySound);
+	cleanFeedNoReplaySound->setToolTip(T("Settings.CleanFeedNoReplaySoundTip"));
+	form->addRow(cleanFeedNoReplaySound);
+
+	cleanFeedBitrate = new QSpinBox(page);
+	cleanFeedBitrate->setRange(1000, 200000);
+	cleanFeedBitrate->setSingleStep(1000);
+	cleanFeedBitrate->setSuffix(" kbps");
+	cleanFeedBitrate->setValue(initial.cleanFeedBitrateKbps);
+	form->addRow(T("Settings.CleanFeedBitrate"), cleanFeedBitrate);
+
+	cleanFeedFormat = new QComboBox(page);
+	cleanFeedFormat->addItem(T("Settings.FormatMkv"), QStringLiteral("mkv"));
+	cleanFeedFormat->addItem(T("Settings.FormatMp4"), QStringLiteral("mp4"));
+	selectData(cleanFeedFormat, qs(initial.cleanFeedFormat));
+	form->addRow(T("Settings.CleanFeedFormat"), cleanFeedFormat);
+
+	auto *note = new QLabel(page);
+	note->setWordWrap(true);
+	form->addRow(note);
+	/* a warning when the chosen track is the one the stream normally uses */
+	auto updateNote = [this, note]() {
+		const bool off = cleanFeedScene->currentData().toString().isEmpty();
+		const bool trackOne = cleanFeedTrack->currentData().toInt() == 1 && cleanFeedNoReplaySound->isChecked();
+		note->setText(off        ? QString()
+			      : trackOne ? T("Settings.CleanFeedTrackOneWarning")
+					 : T("Settings.CleanFeedNote"));
+		for (QWidget *w : std::initializer_list<QWidget *>{
+			     cleanFeedStart, cleanFeedTrack, cleanFeedNoReplaySound, cleanFeedBitrate, cleanFeedFormat})
+			w->setEnabled(!off);
+	};
+	connect(cleanFeedScene, &QComboBox::currentIndexChanged, this, updateNote);
+	connect(cleanFeedTrack, &QComboBox::currentIndexChanged, this, updateNote);
+	connect(cleanFeedNoReplaySound, &QCheckBox::toggled, this, updateNote);
+	updateNote();
+	return page;
+}
+
 QWidget *SettingsDialog::buildSportTab()
 {
 	auto *page = new QWidget(this);
@@ -652,6 +733,13 @@ Config SettingsDialog::result() const
 	cfg.highlightsFadeMs = (int)std::lround(highlightsFade->value() * 1000.0);
 	cfg.autoHighlights = autoHighlights->isChecked();
 	cfg.autoHighlightsDelay = autoHighlightsDelay->value();
+
+	cfg.cleanFeedScene = cleanFeedScene->currentData().toString().toStdString();
+	cfg.cleanFeedStart = cleanFeedStart->currentData().toString().toStdString();
+	cfg.cleanFeedTrack = cleanFeedTrack->currentData().toInt();
+	cfg.cleanFeedNoReplaySound = cleanFeedNoReplaySound->isChecked();
+	cfg.cleanFeedBitrateKbps = cleanFeedBitrate->value();
+	cfg.cleanFeedFormat = cleanFeedFormat->currentData().toString().toStdString();
 	return cfg;
 }
 

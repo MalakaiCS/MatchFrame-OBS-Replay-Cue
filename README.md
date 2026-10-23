@@ -44,7 +44,9 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
 - **Matches:** name each match and its teams ("Match 1: Leeds vs York"). Its
   replays and exported highlights get their own folder, and the replay list
   shows that match's replays.
-- **Control surfaces:** 34 OBS hotkeys and 48 obs-websocket requests for
+- **Clean feed:** record your live scene (camera and graphics) on its own for
+  the whole match, without the replays, into the match's folder.
+- **Control surfaces:** 35 OBS hotkeys and 50 obs-websocket requests for
   Stream Deck, Bitfocus Companion, Touch Portal or your own scripts.
 
 ## Requirements
@@ -60,6 +62,7 @@ transitions. Inspired by the vMix Replay workflow, built natively for OBS.
 - RAM for the buffers: cameras × bitrate × buffer length. 4 cameras at
   25 Mbps with a 2-minute buffer ≈ 1.4 GB. The settings dialog shows the
   estimate.
+- The clean feed recording uses one more encoder session.
 - HDR recording needs an HDR canvas (Settings → Advanced → Video in OBS) and an
   encoder that does 10-bit HEVC or AV1 (NVENC, AMF, Quick Sync, Apple
   VideoToolbox); *Automatic* picks one. Otherwise cameras are recorded in SDR.
@@ -177,6 +180,42 @@ name it afterwards with Edit match. A replay's right-click **Period** menu moves
 it to another period. Without a sport there are no matches, and the Highlights
 tab has a single *All highlights* reel.
 
+## Clean feed recording
+
+![Settings → Clean feed](docs/images/clean-feed.png)
+
+The programme (your stream and OBS's own recording) has the replays cut into
+it. The clean feed is a second recording of just your live scene, the camera
+with its graphics, which keeps going while a replay is on air. Use it for the
+full match video, or to cut your own edit later.
+
+1. **Settings… → Clean feed.** Pick the scene to record (for example *Live*).
+   The Replay and highlights scenes are not offered.
+2. **Choose when it records:**
+   - *With the match*: from *Start 1st Half* to *Full Time*, through the
+     breaks, one file per match. If OBS is restarted mid-match it carries on
+     in a new file.
+   - *While the cameras are armed*: whenever Replay Cue is armed.
+   - *Only with the REC button*.
+
+   The **● REC** button in the dock (and the *Start / stop clean feed
+   recording* hotkey) starts or stops it by hand in any mode, and shows how
+   long it has been recording.
+3. **Sound.** Pick the OBS audio track to record (track 2 by default). With
+   *Leave the replay sound out* on, the Replay Cue Player is taken off that
+   track (OBS → Edit → Advanced Audio Properties), so replays are not heard in
+   the clean feed; tick the track there again if you turn the option off. Keep
+   your stream on another track (normally track 1), or the replays would be
+   silent on the stream too; the settings warn you.
+
+Each match's clean feed is saved in its folder:
+`Match 1 - Leeds vs York/Recordings/Match 1 - Leeds vs York - Clean feed.mkv`
+(numbered `(2)`, `(3)`… if you record again). Without a match it goes in
+`Recordings/Clean feed <date>.mkv` in the replay folder. MKV is the default;
+MP4 is written fragmented, so either is safe if OBS stops suddenly. The picture
+is the canvas at OBS's output size, recorded with the camera encoder (HDR on an
+HDR canvas).
+
 ## Operator controls
 
 ### Dock keyboard (while the dock has focus)
@@ -199,7 +238,8 @@ Arm/disarm, Mark IN, Mark OUT, Save instant replay, Save instant replay and
 play, Cue selected, Play selected, Play latest, Play/pause, Restart, Back to
 live, Next/previous angle, Angle 1–8, Speed 25/50/75/100%, Step back/forward,
 Select previous/next replay, Play previous/next replay, Next match period /
-break, Play highlights, Add / remove selected replay in highlights.
+break, Play highlights, Add / remove selected replay in highlights, Start /
+stop clean feed recording.
 
 Bindings are stored in the plugin's own config and survive scene-collection
 changes.
@@ -226,7 +266,7 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 
 | Request | Data | What it does |
 |---|---|---|
-| `GetStatus` | – | Armed state, per-camera buffer, marks, playback state, options |
+| `GetStatus` | – | Armed state, per-camera buffer, marks, playback state, options, clean feed (`recording`, `file`, `seconds`) |
 | `GetEvents` | – | Replay list as the dock shows it: the open match's replays (id, name, tag, angles, duration, index) |
 | `Arm` / `Disarm` / `ToggleArm` | – | Start/stop the camera buffers |
 | `MarkIn` / `MarkOut` / `ClearMarks` | – | Mark a replay; OUT saves it |
@@ -259,6 +299,7 @@ the OBS hotkeys above, or use a websocket plugin that can send raw requests.
 | `ExportHighlights` | `reel?`, `angle?` | Save a highlights reel as one MP4 in the match's `Highlights` folder |
 | `SetHighlight` | `id`/`index`?, `highlight?` | Put a replay in or out of the highlights (toggles if `highlight` is omitted) |
 | `SetEventPeriod` | `id`/`index`, `period` | Move a replay to another period |
+| `StartCleanFeed` / `StopCleanFeed` | – | Start or stop the clean feed recording |
 | `SaveUiSnapshot` | `folder` | Save PNGs of the dock, the New match dialog and settings (for docs) |
 
 Reels are named by the phase number of their break (`reel: 2` is Half Time in
@@ -268,7 +309,8 @@ football; `GetMatch` lists them). Replays in `GetEvents` carry `highlight`,
 Vendor events (subscribe to `Vendors`): `ReplayCreated`, `PlaybackStarted`,
 `PlaybackEnded`, `PlaybackStopped`, `ArmedChanged`, `MatchChanged` (a match
 was created, opened or renamed), `MatchPhaseChanged`, `HighlightsStarted`,
-`HighlightsExported` (with the file path, so a script can upload it). In a
+`HighlightsExported` (with the file path, so a script can upload it),
+`CleanFeedStarted` and `CleanFeedStopped` (with the file and its length). In a
 highlights reel each replay sends `PlaybackStarted` as it fades in.
 
 `tools/replaycue_ws.py` is a dependency-free command-line client:
@@ -301,6 +343,8 @@ Replays/
     Highlights/
       Match 1 - Leeds vs York - Half Time highlights.mp4
       Match 1 - Leeds vs York - Full Time highlights.mp4
+    Recordings/
+      Match 1 - Leeds vs York - Clean feed.mkv
   Match 2 - Hull vs Bath/
     …
 ```
@@ -346,6 +390,10 @@ for it.
 - HDR is recorded only with a 10-bit HEVC or AV1 encoder; an H.264 encoder on
   an HDR canvas records SDR (Rec. 709).
 - A highlights reel cuts, rather than fades, between an HDR and an SDR replay.
+- The clean feed's sound is an OBS mixer track. Microphones and desktop audio
+  are in it all the time, but OBS mixes a scene's own sources (a camera's
+  embedded audio, for example) only while that scene is on air, so they drop
+  out of the clean feed during replays.
 - Playing many angles decodes all of them at once so switching is instant;
   hardware decoding is on by default.
 - Hotkeys are global to the plugin, not per replay. Use `PlayEvent` with an

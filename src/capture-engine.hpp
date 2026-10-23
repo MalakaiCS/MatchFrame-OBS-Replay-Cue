@@ -39,6 +39,11 @@ struct CaptureSettings {
 	bool hdr = true;    /* 10-bit HDR when the canvas is HDR and the encoder supports it */
 };
 
+/* CBR at the capture bitrate, keyframe interval, no B-frames (caller releases) */
+obs_data_t *makeVideoEncoderSettings(const std::string &id, const CaptureSettings &settings);
+/* the best AAC (or Opus) encoder available, or nullptr */
+const char *pickAudioEncoder();
+
 struct AngleSpec {
 	std::string label;
 	std::string sourceName;

@@ -72,6 +72,7 @@ private:
 
 	QPushButton *armButton;
 	QLabel *captureLabel;
+	QPushButton *recButton;
 	QToolButton *settingsButton;
 	QPushButton *markInButton;
 	QPushButton *markOutButton;

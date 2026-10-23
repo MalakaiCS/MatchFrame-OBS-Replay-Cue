@@ -25,6 +25,7 @@ namespace rc {
 
 extern const char *kMatchFileName;    /* "match.rcmatch.json", in the match's folder */
 extern const char *kHighlightsFolder; /* "Highlights", where a match's reels are exported */
+extern const char *kRecordingsFolder; /* "Recordings", where its clean feed is recorded */
 
 /*
  * A match ("Match 1: Leeds vs York"). Its replays and exported highlights

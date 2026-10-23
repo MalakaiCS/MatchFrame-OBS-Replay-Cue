@@ -46,6 +46,7 @@ private:
 	QWidget *buildReplaysTab();
 	QWidget *buildPlaybackTab();
 	QWidget *buildSportTab();
+	QWidget *buildCleanFeedTab();
 
 	void addAngleRow(const AngleSetting &angle);
 	void addAllCameras();
@@ -98,6 +99,13 @@ private:
 	QDoubleSpinBox *highlightsFade = nullptr;
 	QCheckBox *autoHighlights = nullptr;
 	QSpinBox *autoHighlightsDelay = nullptr;
+
+	QComboBox *cleanFeedScene = nullptr;
+	QComboBox *cleanFeedStart = nullptr;
+	QComboBox *cleanFeedTrack = nullptr;
+	QCheckBox *cleanFeedNoReplaySound = nullptr;
+	QSpinBox *cleanFeedBitrate = nullptr;
+	QComboBox *cleanFeedFormat = nullptr;
 };
 
 } // namespace rc

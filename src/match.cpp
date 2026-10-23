@@ -27,6 +27,7 @@ namespace rc {
 
 const char *kMatchFileName = "match.rcmatch.json";
 const char *kHighlightsFolder = "Highlights";
+const char *kRecordingsFolder = "Recordings";
 
 namespace {
 
