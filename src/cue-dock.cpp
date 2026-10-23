@@ -113,11 +113,14 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 	captureLabel = new QLabel();
 	captureLabel->setTextFormat(Qt::RichText);
 	captureLabel->setWordWrap(true);
+	recButton = new QPushButton(T("Dock.Rec"));
+	recButton->setCheckable(true);
 	settingsButton = new QToolButton();
 	settingsButton->setText(T("Dock.Settings"));
 	settingsButton->setToolTip(T("Dock.SettingsTip"));
 	captureRow->addWidget(armButton);
 	captureRow->addWidget(captureLabel, 1);
+	captureRow->addWidget(recButton);
 	captureRow->addWidget(settingsButton);
 	root->addLayout(captureRow);
 
@@ -251,6 +254,7 @@ CueDock::CueDock(ReplayController *c, QWidget *parent) : QWidget(parent), contro
 
 	/* wiring */
 	connect(armButton, &QPushButton::clicked, this, [this]() { controller->toggleArm(); });
+	connect(recButton, &QPushButton::clicked, this, [this]() { controller->toggleCleanFeed(); });
 	connect(settingsButton, &QToolButton::clicked, this, &CueDock::openSettings);
 	connect(markInButton, &QPushButton::clicked, this, [this]() { controller->markIn(); });
 	connect(markOutButton, &QPushButton::clicked, this, [this]() { controller->markOut(); });
@@ -466,6 +470,19 @@ void CueDock::updateCapture()
 	}
 	captureLabel->setText(chips.join("&nbsp;&nbsp; "));
 	captureLabel->setToolTip(details.join("\n"));
+
+	/* clean feed: shown once a scene to record is set */
+	const std::string &feedScene = controller->config().cleanFeedScene;
+	const bool recording = controller->cleanFeedRecording();
+	recButton->setVisible(!feedScene.empty());
+	recButton->setChecked(recording);
+	recButton->setText(recording
+				   ? QString(T("Dock.Recording"))
+					     .arg(qs(formatDuration(controller->cleanFeedSeconds())).section('.', 0, 0))
+				   : T("Dock.Rec"));
+	recButton->setStyleSheet(recording ? "QPushButton { color: white; background-color: #c62828; }" : QString());
+	recButton->setToolTip(recording ? QString(T("Dock.RecordingTip")).arg(controller->cleanFeedFile())
+					: QString(T("Dock.RecTip")).arg(qs(feedScene)));
 
 	QStringList marks;
 	if (controller->markInUsec())

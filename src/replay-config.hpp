@@ -84,6 +84,14 @@ struct Config {
 	bool autoHighlights = false; /* play the reel when a break starts */
 	int autoHighlightsDelay = 5; /* seconds after the break is called */
 
+	/* clean feed: one scene recorded on its own, without the replays */
+	std::string cleanFeedScene;           /* empty: off */
+	std::string cleanFeedStart = "match"; /* "match" (kick-off to full time), "armed" or "manual" */
+	int cleanFeedTrack = 2;               /* OBS mixer track, 0: no sound */
+	bool cleanFeedNoReplaySound = true;   /* take the player off that track */
+	int cleanFeedBitrateKbps = 12000;
+	std::string cleanFeedFormat = "mkv"; /* "mkv" or "mp4" */
+
 	void load();
 	void save() const;
 

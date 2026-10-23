@@ -189,6 +189,10 @@ const HotkeyDef kHotkeys[] = {
 	 [](ReplayController &c) {
 		 c.toggleHighlight(QString::fromStdString(c.selectedEventId()));
 	 }},
+	{"ReplayCue.ToggleCleanFeed", "Hotkey.ToggleCleanFeed",
+	 [](ReplayController &c) {
+		 c.toggleCleanFeed();
+	 }},
 };
 
 void hotkeyPressed(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -293,6 +297,15 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent)
 	tickTimer->setInterval(1000);
 	connect(tickTimer, &QTimer::timeout, this, [this]() {
 		engine.tick();
+		const std::string file = cleanFeed.file();
+		std::string error;
+		if (cleanFeed.tick(error)) {
+			say(QString(text("Msg.CleanFeedFailed")).arg(qstr(error)), true);
+			OBSDataAutoRelease data = obs_data_create();
+			obs_data_set_string(data, "file", file.c_str());
+			obs_data_set_string(data, "error", error.c_str());
+			emitVendor("CleanFeedStopped", data);
+		}
 		emit statusChanged();
 	});
 	tickTimer->start();
@@ -331,6 +344,7 @@ void ReplayController::shutdown()
 	pollTimer = tickTimer = rescanTimer = nullptr;
 	watcher = nullptr;
 
+	cleanFeed.shutdown();
 	engine.disarm();
 	writer.reset();
 	if (scanThread.joinable())
@@ -406,6 +420,10 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP:
 		/* our views hold references to the old collection's sources */
+		if (cleanFeed.recording()) {
+			cleanFeedBeforeCollectionChange = true;
+			stopCleanFeed();
+		}
 		if (engine.armed()) {
 			wasArmedBeforeCollectionChange = true;
 			disarm();
@@ -423,6 +441,10 @@ void ReplayController::onFrontendEvent(enum obs_frontend_event event)
 		if (wasArmedBeforeCollectionChange) {
 			wasArmedBeforeCollectionChange = false;
 			arm();
+		}
+		if (cleanFeedBeforeCollectionChange) {
+			cleanFeedBeforeCollectionChange = false;
+			startCleanFeed();
 		}
 		break;
 
@@ -448,6 +470,8 @@ void ReplayController::initialize()
 	refreshEvents();
 	if (cfg.armOnStartup)
 		arm();
+	if (cleanFeedWanted())
+		startCleanFeed(); /* OBS was restarted during the match */
 }
 
 void ReplayController::registerHotkeys()
@@ -533,6 +557,7 @@ void ReplayController::applyConfig(const Config &updated)
 	if (sportChanged) {
 		match = MatchInfo();
 		matchSwitched();
+		cleanFeedFollowsMatch();
 	} else if (cfg.folder != previous.folder && !match.folder.empty()) {
 		/* the open match carries on in a folder of the same name there */
 		match.folder = joinPath(cfg.folder, cfg.matchFolder);
@@ -550,6 +575,20 @@ void ReplayController::applyConfig(const Config &updated)
 	updateWatcher();
 	if (sportChanged || !cfg.autoHighlights)
 		cancelAutoHighlights();
+	const bool cleanFeedChanged = cfg.cleanFeedScene != previous.cleanFeedScene ||
+				      cfg.cleanFeedStart != previous.cleanFeedStart ||
+				      cfg.cleanFeedTrack != previous.cleanFeedTrack ||
+				      cfg.cleanFeedBitrateKbps != previous.cleanFeedBitrateKbps ||
+				      cfg.cleanFeedFormat != previous.cleanFeedFormat ||
+				      cfg.cleanFeedNoReplaySound != previous.cleanFeedNoReplaySound;
+	if (cleanFeedChanged) {
+		/* a running recording picks up the new settings in a new file */
+		const bool wasRecording = cleanFeed.recording();
+		stopCleanFeed();
+		if (cleanFeedWanted() ||
+		    (wasRecording && cfg.cleanFeedStart == "manual" && !cfg.cleanFeedScene.empty()))
+			startCleanFeed();
+	}
 	rebuildMatchSnapshot();
 	emit statusChanged();
 	if (sportChanged)
@@ -576,6 +615,8 @@ void ReplayController::arm()
 	}
 	engine.arm(angles, cfg.captureSettings());
 	say(QString(text("Msg.Armed")).arg(angles.size()));
+	if (cfg.cleanFeedStart == "armed" && !cfg.cleanFeedScene.empty())
+		startCleanFeed();
 	emit statusChanged();
 
 	OBSDataAutoRelease data = obs_data_create();
@@ -589,6 +630,8 @@ void ReplayController::disarm()
 		return;
 	engine.disarm();
 	markInTime = 0;
+	if (cfg.cleanFeedStart == "armed")
+		stopCleanFeed();
 	say(text("Msg.Disarmed"));
 	emit statusChanged();
 
@@ -1081,6 +1124,7 @@ void ReplayController::createMatch(const std::string &name, const std::string &h
 	cfg.matchFolder = created.folder.empty() ? std::string() : fileNameOf(created.folder);
 	cfg.matchPhase = 0;
 	matchSwitched();
+	cleanFeedFollowsMatch();
 }
 
 void ReplayController::matchSwitched()
@@ -1126,6 +1170,14 @@ void ReplayController::setMatchPhase(int phase)
 		scheduleAutoHighlights(phase);
 	else
 		cancelAutoHighlights();
+
+	/* the clean feed runs from kick-off to full time */
+	if (cfg.cleanFeedStart == "match" && !cfg.cleanFeedScene.empty()) {
+		if (isFullTime(s, phase))
+			stopCleanFeed();
+		else if (phase > 0)
+			startCleanFeed();
+	}
 }
 
 void ReplayController::nextMatchPhase()
@@ -1175,7 +1227,8 @@ void ReplayController::editMatch(const QString &name, const QString &home, const
 		edited.folder = uniqueMatchFolder(wanted, std::string());
 		if (!QDir().mkpath(qstr(edited.folder)))
 			edited.folder.clear();
-	} else if (fileNameOf(edited.folder) != wanted && pendingClips == 0 && playingId.empty()) {
+	} else if (fileNameOf(edited.folder) != wanted && pendingClips == 0 && playingId.empty() &&
+		   !cleanFeed.recording()) {
 		/* "Match 1 (2)" stays as it is while "Match 1" is taken */
 		const std::string target = uniqueMatchFolder(wanted, edited.folder);
 		if (target != edited.folder) {
@@ -1234,6 +1287,7 @@ void ReplayController::openMatch(const QString &id)
 	cfg.matchFolder = match.folder.empty() ? std::string() : fileNameOf(match.folder);
 	cfg.matchPhase = std::clamp(match.phase, 0, phaseCount(sport()) - 1);
 	matchSwitched();
+	cleanFeedFollowsMatch();
 	say(QString(text("Msg.MatchOpened")).arg(qstr(matchTitle(match))));
 	matchUpdated();
 }
@@ -1689,6 +1743,113 @@ void ReplayController::importReplayBufferSave()
 }
 
 /* ------------------------------------------------------------------------- */
+/* Clean feed                                                                */
+
+std::string ReplayController::cleanFeedPath() const
+{
+	/* "Match 1 - Leeds vs York/Recordings/Match 1 - Leeds vs York - Clean feed.mkv" */
+	const std::string ext = "." + cfg.cleanFeedFormat;
+	const bool inMatch = !match.folder.empty();
+	const std::string dir = joinPath(inMatch ? match.folder : cfg.folder, kRecordingsFolder);
+	const std::string stem = inMatch ? safeName(matchFolderName(match) + " - Clean feed")
+					 : "Clean feed " + formatFileStamp(wallClockSeconds());
+	std::string path = joinPath(dir, stem + ext);
+	for (int n = 2; QFileInfo::exists(qstr(path)); n++)
+		path = joinPath(dir, stem + " (" + std::to_string(n) + ")" + ext);
+	return path;
+}
+
+void ReplayController::keepReplaySoundOut(obs_source_t *player)
+{
+	if (!player || cfg.cleanFeedTrack < 1)
+		return;
+	const uint32_t track = 1u << (cfg.cleanFeedTrack - 1);
+	const uint32_t mixers = obs_source_get_audio_mixers(player);
+	if (mixers & track) {
+		obs_source_set_audio_mixers(player, mixers & ~track);
+		obs_log(LOG_INFO, "clean feed: '%s' taken off audio track %d", obs_source_get_name(player),
+			cfg.cleanFeedTrack);
+	}
+}
+
+bool ReplayController::cleanFeedWanted() const
+{
+	if (cfg.cleanFeedScene.empty())
+		return false;
+	if (cfg.cleanFeedStart == "armed")
+		return engine.armed();
+	return cfg.cleanFeedStart == "match" && !cfg.matchId.empty() && cfg.matchPhase > 0 &&
+	       !isFullTime(sport(), cfg.matchPhase);
+}
+
+void ReplayController::cleanFeedFollowsMatch()
+{
+	if (!cleanFeed.recording() || cfg.cleanFeedStart == "manual")
+		return;
+	/* with the match: the next one records from its own kick-off; while
+	 * armed: it carries on in the new match's folder */
+	stopCleanFeed();
+	if (cleanFeedWanted())
+		startCleanFeed();
+}
+
+void ReplayController::startCleanFeed()
+{
+	if (cleanFeed.recording())
+		return;
+	if (cfg.cleanFeedScene.empty()) {
+		say(text("Msg.CleanFeedNoSceneSet"), true);
+		return;
+	}
+	CleanFeedSettings settings;
+	settings.sceneName = cfg.cleanFeedScene;
+	settings.path = cleanFeedPath();
+	settings.encoderId = cfg.encoderId;
+	settings.bitrateKbps = cfg.cleanFeedBitrateKbps;
+	settings.audioTrack = cfg.cleanFeedTrack;
+	settings.hdr = cfg.captureHdr;
+	if (cfg.cleanFeedNoReplaySound) {
+		PlayerRef ref = acquirePlayer(false);
+		keepReplaySoundOut(ref.source);
+	}
+
+	std::string error;
+	if (!cleanFeed.start(settings, error)) {
+		say(QString(text("Msg.CleanFeedFailed")).arg(qstr(error)), true);
+		return;
+	}
+	say(QString(text("Msg.CleanFeedStarted")).arg(qstr(settings.sceneName), qstr(settings.path)));
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_string(data, "file", settings.path.c_str());
+	obs_data_set_string(data, "scene", settings.sceneName.c_str());
+	emitVendor("CleanFeedStarted", data);
+	emit statusChanged();
+}
+
+void ReplayController::stopCleanFeed()
+{
+	if (!cleanFeed.recording())
+		return;
+	const std::string file = cleanFeed.file();
+	const double seconds = cleanFeed.seconds();
+	cleanFeed.stop();
+	say(QString(text("Msg.CleanFeedSaved")).arg(qstr(formatDuration(seconds)), qstr(file)));
+	OBSDataAutoRelease data = obs_data_create();
+	obs_data_set_string(data, "file", file.c_str());
+	obs_data_set_double(data, "duration", seconds);
+	emitVendor("CleanFeedStopped", data);
+	emit statusChanged();
+}
+
+void ReplayController::toggleCleanFeed()
+{
+	if (cleanFeed.recording())
+		stopCleanFeed();
+	else
+		startCleanFeed();
+}
+
+/* ------------------------------------------------------------------------- */
 /* Player and scenes                                                         */
 
 bool ReplayController::ensureScene(const std::string &name, OBSSourceAutoRelease &scene, obs_source_t *player,
@@ -1777,8 +1938,11 @@ ReplayController::PlayerRef ReplayController::acquirePlayer(bool create)
 					&ref.source);
 			}
 		}
-		if (!ref.source && create)
+		if (!ref.source && create) {
 			ref.source = obs_source_create(kPlayerSourceId, cfg.playerName.c_str(), nullptr, nullptr);
+			if (!cfg.cleanFeedScene.empty() && cfg.cleanFeedNoReplaySound)
+				keepReplaySoundOut(ref.source);
+		}
 		if (!ref.source)
 			return ref;
 		playerWeak = obs_source_get_weak_source(ref.source);
@@ -2341,6 +2505,14 @@ void ReplayController::poll()
 	obs_data_set_string(match, "phase_name", phaseName(s, cfg.matchPhase).c_str());
 	obs_data_set_bool(match, "in_break", isBreakPhase(s, cfg.matchPhase));
 	obs_data_set_obj(snap, "match", match);
+
+	OBSDataAutoRelease feed = obs_data_create();
+	obs_data_set_bool(feed, "recording", cleanFeed.recording());
+	obs_data_set_string(feed, "scene", cfg.cleanFeedScene.c_str());
+	obs_data_set_string(feed, "start", cfg.cleanFeedStart.c_str());
+	obs_data_set_string(feed, "file", cleanFeed.file().c_str());
+	obs_data_set_double(feed, "seconds", cleanFeed.seconds());
+	obs_data_set_obj(snap, "clean_feed", feed);
 
 	std::lock_guard<std::mutex> lock(snapshotMutex);
 	statusData = snap.Get();

@@ -113,6 +113,8 @@ SIMPLE(reqNextAngle, c.nextAngle())
 SIMPLE(reqPrevAngle, c.prevAngle())
 SIMPLE(reqRefresh, c.refreshEvents())
 SIMPLE(reqNextMatchPhase, c.nextMatchPhase())
+SIMPLE(reqStartCleanFeed, c.startCleanFeed())
+SIMPLE(reqStopCleanFeed, c.stopCleanFeed())
 
 #undef SIMPLE
 
@@ -497,6 +499,8 @@ const Request kRequests[] = {
 	{"ExportHighlights", reqExportHighlights},
 	{"SetHighlight", reqSetHighlight},
 	{"SetEventPeriod", reqSetEventPeriod},
+	{"StartCleanFeed", reqStartCleanFeed},
+	{"StopCleanFeed", reqStopCleanFeed},
 	{"SaveUiSnapshot", reqSaveUiSnapshot},
 };
 

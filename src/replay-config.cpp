@@ -91,6 +91,15 @@ void Config::load()
 	autoHighlights = getBool(data, "auto_highlights", autoHighlights);
 	autoHighlightsDelay = std::clamp(getInt(data, "auto_highlights_delay", autoHighlightsDelay), 0, 120);
 
+	cleanFeedScene = getString(data, "clean_feed_scene", cleanFeedScene);
+	cleanFeedStart = getString(data, "clean_feed_start", cleanFeedStart);
+	if (cleanFeedStart != "match" && cleanFeedStart != "armed" && cleanFeedStart != "manual")
+		cleanFeedStart = "match";
+	cleanFeedTrack = std::clamp(getInt(data, "clean_feed_track", cleanFeedTrack), 0, 6);
+	cleanFeedNoReplaySound = getBool(data, "clean_feed_no_replay_sound", cleanFeedNoReplaySound);
+	cleanFeedBitrateKbps = std::clamp(getInt(data, "clean_feed_bitrate", cleanFeedBitrateKbps), 1000, 200000);
+	cleanFeedFormat = getString(data, "clean_feed_format", cleanFeedFormat) == "mp4" ? "mp4" : "mkv";
+
 	obs_data_array_t *arr = obs_data_get_array(data, "angles");
 	for (size_t i = 0, n = obs_data_array_count(arr); i < n && angles.size() < (size_t)kMaxAngles; i++) {
 		obs_data_t *a = obs_data_array_item(arr, i);
@@ -241,6 +250,13 @@ void Config::save() const
 	obs_data_set_int(data, "highlights_fade_ms", highlightsFadeMs);
 	obs_data_set_bool(data, "auto_highlights", autoHighlights);
 	obs_data_set_int(data, "auto_highlights_delay", autoHighlightsDelay);
+
+	obs_data_set_string(data, "clean_feed_scene", cleanFeedScene.c_str());
+	obs_data_set_string(data, "clean_feed_start", cleanFeedStart.c_str());
+	obs_data_set_int(data, "clean_feed_track", cleanFeedTrack);
+	obs_data_set_bool(data, "clean_feed_no_replay_sound", cleanFeedNoReplaySound);
+	obs_data_set_int(data, "clean_feed_bitrate", cleanFeedBitrateKbps);
+	obs_data_set_string(data, "clean_feed_format", cleanFeedFormat.c_str());
 
 	obs_data_save_json_pretty_safe(data, path.c_str(), "tmp", "bak");
 	obs_data_release(data);

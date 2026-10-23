@@ -49,6 +49,8 @@ bool isUsableVideoEncoder(const char *id)
 	return strcmp(codec, "h264") == 0 || strcmp(codec, "hevc") == 0 || strcmp(codec, "av1") == 0;
 }
 
+} // namespace
+
 obs_data_t *makeVideoEncoderSettings(const std::string &id, const CaptureSettings &s)
 {
 	obs_data_t *settings = obs_encoder_defaults(id.c_str());
@@ -80,8 +82,6 @@ const char *pickAudioEncoder()
 			return id;
 	return nullptr;
 }
-
-} // namespace
 
 /* ------------------------------------------------------------------------- */
 

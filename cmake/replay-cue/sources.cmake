@@ -5,6 +5,7 @@ set(
   REPLAY_CUE_SOURCES
   src/capture-engine.cpp
   src/capture-output.cpp
+  src/clean-feed.cpp
   src/clip-writer.cpp
   src/cue-dock.cpp
   src/ffmpeg-compat.cpp
@@ -27,6 +28,7 @@ set(
   REPLAY_CUE_HEADERS
   src/capture-engine.hpp
   src/capture-output.hpp
+  src/clean-feed.hpp
   src/clip-writer.hpp
   src/cue-dock.hpp
   src/ffmpeg-compat.hpp
